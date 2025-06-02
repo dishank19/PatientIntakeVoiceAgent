@@ -64,6 +64,7 @@ class IntakeProcessor:
         self.call_data = {}
         self.is_spanish = False
         self.context = context  # Store context for access in handlers
+        self.pipeline = None  # Will be set when pipeline is created
         context.add_message(
             {
                 "role": "system",
@@ -484,10 +485,8 @@ Start by introducing yourself and asking for the patient's name. Then, ask what 
         
         # Exit the room after a short delay to allow the closing message to be delivered
         await asyncio.sleep(2)
-        # Get transport from the pipeline instead of context
-        transport = params.llm.pipeline.transport
-        if transport:
-            await transport.leave()
+        if self.pipeline and self.pipeline.transport:
+            await self.pipeline.transport.leave()
 
     async def save_data(self, args, result_callback):
         try:
@@ -573,8 +572,13 @@ async def main():
                 context_aggregator.assistant(),  # Assistant responses
             ]
         )
-
+        
+        # Store pipeline reference in intake processor
+        intake.pipeline = pipeline
+        
+        # Create pipeline task
         task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=False))
+        intake.pipeline.task = task
 
         @transport.event_handler("on_first_participant_joined")
         async def on_first_participant_joined(transport, participant):
@@ -599,7 +603,6 @@ async def main():
             print(f"Call interrupted by participant {participant['id']}")
 
         runner = PipelineRunner()
-
         await runner.run(task)
 
 

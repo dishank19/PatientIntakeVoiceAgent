@@ -1,0 +1,19 @@
+{
+  "patient_name": "Dushyank Javeri",
+  "intent": "appointment_scheduling",
+  "details": "Patient wants to book a doctor's appointment.",
+  "prescriptions": [
+    {
+      "medication": "Tylenol",
+      "dosage": "500 mg, twice a day"
+    }
+  ],
+  "allergies": [],
+  "conditions": [],
+  "visit_reasons": [
+    {
+      "name": "knee pain"
+    }
+  ],
+  "has_appointment": false
+}

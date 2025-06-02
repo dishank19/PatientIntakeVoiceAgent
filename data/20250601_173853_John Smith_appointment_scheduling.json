@@ -1,0 +1,8 @@
+{
+  "patient_name": "John Smith",
+  "intent": "appointment_scheduling",
+  "details": "Patient wants to book an appointment.",
+  "is_spanish": false,
+  "has_appointment": false,
+  "call_status": "completed"
+}
