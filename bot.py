@@ -63,6 +63,7 @@ class IntakeProcessor:
         # Initialize call data dictionary
         self.call_data = {}
         self.is_spanish = False
+        self.context = context  # Store context for access in handlers
         context.add_message(
             {
                 "role": "system",
@@ -195,7 +196,7 @@ Start by introducing yourself and asking for the patient's name. Then, ask what 
                 [
                     {
                         "role": "system",
-                        "content": "Gracias por proporcionar esa información. <break time='1s'/> Ahora, ¿podría por favor listar sus medicamentos recetados actuales? Cada receta necesita tener un nombre de medicamento y una dosis.",
+                        "content": "Gracias por esa información. <break time='1s'/> ¿Podría decirme qué medicamentos está tomando actualmente?",
                     }
                 ]
             )
@@ -204,7 +205,7 @@ Start by introducing yourself and asking for the patient's name. Then, ask what 
                 [
                     {
                         "role": "system",
-                        "content": "Thank you for providing that information. <break time='1s'/> Now, could you please list your current prescriptions? Each prescription needs to have a medication name and a dosage.",
+                        "content": "Thanks for that information. <break time='1s'/> Could you tell me what medications you're currently taking?",
                     }
                 ]
             )
@@ -267,14 +268,14 @@ Start by introducing yourself and asking for the patient's name. Then, ask what 
             params.context.add_message(
                 {
                     "role": "system",
-                    "content": "Ahora, <break time='1s'/> ¿tiene alguna alergia? Una vez que haya listado sus alergias o confirmado que no tiene ninguna, llamaré a la función list_allergies.",
+                    "content": "¿Y hay algo a lo que sea alérgico?",
                 }
             )
         else:
             params.context.add_message(
                 {
                     "role": "system",
-                    "content": "Next, <break time='1s'/> ask the user if they have any allergies. Once they have listed their allergies or confirmed they don't have any, call the list_allergies function.",
+                    "content": "And is there anything you're allergic to?",
                 }
             )
         await params.llm.queue_frame(
@@ -339,14 +340,14 @@ Start by introducing yourself and asking for the patient's name. Then, ask what 
             params.context.add_message(
                 {
                     "role": "system",
-                    "content": "Ahora, <break time='1s'/> ¿tiene alguna condición médica que el doctor deba conocer? Una vez que haya respondido, llamaré a la función list_conditions.",
+                    "content": "¿Hay alguna condición médica que el doctor deba conocer?",
                 }
             )
         else:
             params.context.add_message(
                 {
                     "role": "system",
-                    "content": "Now, <break time='1s'/> ask the user if they have any medical conditions the doctor should know about. Once they've answered the question, call the list_conditions function.",
+                    "content": "Is there any medical condition the doctor should know about?",
                 }
             )
         await params.llm.queue_frame(
@@ -411,14 +412,14 @@ Start by introducing yourself and asking for the patient's name. Then, ask what 
             params.context.add_message(
                 {
                     "role": "system",
-                    "content": "Finalmente, <break time='1s'/> ¿cuál es el motivo de su visita al doctor hoy? Una vez que responda, llamaré a la función list_visit_reasons.",
+                    "content": "¿Y qué le trae hoy a la consulta?",
                 }
             )
         else:
             params.context.add_message(
                 {
                     "role": "system",
-                    "content": "Finally, <break time='1s'/> ask the user the reason for their doctor visit today. Once they answer, call the list_visit_reasons function.",
+                    "content": "And what brings you in today?",
                 }
             )
         await params.llm.queue_frame(
@@ -437,7 +438,7 @@ Start by introducing yourself and asking for the patient's name. Then, ask what 
                 [
                     {
                         "role": "system",
-                        "content": "Gracias por proporcionar toda esta información. <break time='1s'/> El doctor la revisará antes de su visita. ¿Hay algo más que le gustaría agregar?",
+                        "content": "Gracias por toda esta información. <break time='1s'/> El doctor la revisará antes de su visita. ¿Hay algo más que quiera mencionar?",
                     }
                 ]
             )
@@ -446,7 +447,7 @@ Start by introducing yourself and asking for the patient's name. Then, ask what 
                 [
                     {
                         "role": "system",
-                        "content": "Thank you for providing all this information. <break time='1s'/> The doctor will review it before your visit. Is there anything else you'd like to add?",
+                        "content": "Thanks for all this information. <break time='1s'/> The doctor will review it before your visit. Is there anything else you'd like to mention?",
                     }
                 ]
             )
@@ -483,7 +484,10 @@ Start by introducing yourself and asking for the patient's name. Then, ask what 
         
         # Exit the room after a short delay to allow the closing message to be delivered
         await asyncio.sleep(2)
-        await params.context.transport.leave()
+        # Get transport from the pipeline instead of context
+        transport = params.llm.pipeline.transport
+        if transport:
+            await transport.leave()
 
     async def save_data(self, args, result_callback):
         try:
@@ -494,6 +498,9 @@ Start by introducing yourself and asking for the patient's name. Then, ask what 
             # Get patient name and intent from the arguments if available
             patient_name = args.get("patient_name", "unknown_patient")
             intent = args.get("intent", "general_inquiry")
+            
+            # Add call status to the data
+            args["call_status"] = "completed" if "call_status" not in args else args["call_status"]
             
             # Create filename
             filename = f"{date_str}_{patient_name}_{intent}.json"
@@ -574,6 +581,22 @@ async def main():
             await transport.capture_participant_transcription(participant["id"])
             print(f"Context is: {context}")
             await task.queue_frames([OpenAILLMContextFrame(context)])
+
+        @transport.event_handler("on_participant_left")
+        async def on_participant_left(transport, participant, *args):
+            # Save data when participant leaves abruptly
+            if hasattr(intake, 'call_data') and intake.call_data:
+                intake.call_data["call_status"] = "abruptly_ended"
+                await intake.save_data(intake.call_data, None)
+            print(f"Participant {participant['id']} left the call")
+
+        @transport.event_handler("on_interruption")
+        async def on_interruption(transport, participant, *args):
+            # Save data when there's an interruption
+            if hasattr(intake, 'call_data') and intake.call_data:
+                intake.call_data["call_status"] = "interrupted"
+                await intake.save_data(intake.call_data, None)
+            print(f"Call interrupted by participant {participant['id']}")
 
         runner = PipelineRunner()
 
