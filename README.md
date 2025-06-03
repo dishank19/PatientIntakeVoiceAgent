@@ -1,4 +1,4 @@
-# Neurality Health AI — Voice Agent
+# Patient Interaction Voice Agent
 
 ## Overview
 A production-ready, multimodal voice agent for patient engagement, built with FastAPI, Pipecat, and modern LLMs. Supports both local and Dockerized workflows.
