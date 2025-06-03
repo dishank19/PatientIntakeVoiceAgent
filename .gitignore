@@ -63,7 +63,7 @@ src/
 *.pyd
 *.mp3
 *.wav
-data
+
 
 # C extensions
 *.so
@@ -121,7 +121,10 @@ coverage.xml
 
 # Local data
 *.sqlite3
-data/
+/data/*.json
+/data/*.txt
+/data/*.csv
+/data/*.log
 
 # Environment variables
 
