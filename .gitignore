@@ -1,16 +1,78 @@
-# Byte-compiled / optimized / DLL files
+# Python virtual environment
+pipecat/
+venv/
+env/
+.env/
+
+# Python bytecode
 __pycache__/
 *.py[cod]
 *$py.class
 
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Local development settings
+.env
+.env.local
+
+# Large binary files
+*.so
+*.dylib
+*.dll
+*.pyd
+
+# Model files and data
+*.pt
+*.pth
+*.onnx
+*.bin
+*.h5
+*.hdf5
+*.npy
+*.npz
+
+# Audio files
+*.wav
+*.mp3
+*.ogg
+*.flac
+
+# Temporary files
+*.tmp
+*.temp
+.DS_Store
+
+# Byte-compiled / optimized / DLL files
+*.env
+
+assets/
+src/
+*.pyc
+*.pyo
+*.pyd
+*.mp3
+*.wav
+data
+tests/
 # C extensions
 *.so
 
 # Distribution / packaging
 .Python
-build/
 develop-eggs/
-dist/
 downloads/
 eggs/
 .eggs/
@@ -19,14 +81,11 @@ lib64/
 parts/
 sdist/
 var/
-*.egg-info/
-.installed.cfg
+*.installed.cfg
 *.egg
 
 # Virtual environments
-venv/
 ENV/
-env/
 .venv/
 
 # PyInstaller
@@ -63,18 +122,12 @@ coverage.xml
 # Pyre type checker
 .pyre/
 
-# Logs
-logs/
-*.log
-data/logs/
-
 # Local data
 *.sqlite3
 data/
 
 # Environment variables
-.env
-.env.*
+*.env.*
 !.env.example
 
 # Docker
@@ -99,11 +152,6 @@ test-output/
 # Ignore build artifacts
 *.o
 *.a
-*.dylib
-*.pyd
-*.dll
-*.obj
-*.exe
 *.out
 
 # Ignore node_modules (if any JS tooling)
