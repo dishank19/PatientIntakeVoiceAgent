@@ -120,7 +120,7 @@ coverage.xml
 .dmypy.json
 
 # Pyre type checker
-.pyre/
+
 
 # Local data
 *.sqlite3
