@@ -10,6 +10,7 @@ import sys
 import wave
 import json
 from datetime import datetime
+import argparse
 
 import aiohttp
 from dotenv import load_dotenv
@@ -518,25 +519,22 @@ Start by introducing yourself and asking for the patient's name. Then, ask what 
             print(f"Error saving data: {e}")
 
 
-async def main():
+async def main(room_url: str, token: str, call_id: str, sip_uri: str):
     async with aiohttp.ClientSession() as session:
-        (room_url, token) = await configure(session)
-
         transport = DailyTransport(
             room_url,
             token,
-            "Chatbot",
+            "Health Intake Bot",
             DailyParams(
+                api_url=os.getenv("DAILY_API_URL", "https://api.daily.co/v1"),
+                api_key=os.getenv("DAILY_API_KEY", ""),
                 audio_in_enabled=True,
                 audio_out_enabled=True,
+                camera_out_enabled=False,
+                vad_enabled=True,
                 vad_analyzer=SileroVADAnalyzer(),
                 transcription_enabled=True,
-                vad_settings={
-                    "min_speech_duration_ms": 500,  # Minimum duration of speech to be considered valid
-                    "min_silence_duration_ms": 1000,  # Minimum duration of silence to consider speech ended
-                    "speech_pad_ms": 300,  # Padding to add to speech segments
-                }
-            ),
+            )
         )
 
         # Initialize TTS service based on detected language
@@ -577,34 +575,49 @@ async def main():
         intake.pipeline = pipeline
         
         # Create pipeline task
-        task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=False))
+        task = PipelineTask(pipeline, params=PipelineParams(
+            allow_interruptions=True,
+            enable_metrics=True,
+        ))
         intake.pipeline.task = task
+
+        @transport.event_handler("on_dialin_ready")
+        async def on_dialin_ready(transport, cdata):
+            try:
+                # Update Twilio call to connect to Daily SIP endpoint
+                call = twilio_client.calls(call_id).update(
+                    twiml=f'<Response><Dial><Sip>{sip_uri}</Sip></Dial></Response>'
+                )
+                logger.info(f"Call {call_id} forwarded to Daily SIP endpoint")
+            except Exception as e:
+                logger.error(f"Failed to forward call: {str(e)}")
+                raise
 
         @transport.event_handler("on_first_participant_joined")
         async def on_first_participant_joined(transport, participant):
-            await transport.capture_participant_transcription(participant["id"])
-            print(f"Context is: {context}")
+            transport.capture_participant_transcription(participant["id"])
             await task.queue_frames([OpenAILLMContextFrame(context)])
 
         @transport.event_handler("on_participant_left")
         async def on_participant_left(transport, participant, *args):
-            # Save data when participant leaves abruptly
-            if hasattr(intake, 'call_data') and intake.call_data:
-                intake.call_data["call_status"] = "abruptly_ended"
-                await intake.save_data(intake.call_data, None)
-            print(f"Participant {participant['id']} left the call")
+            # Save data when participant leaves
+            await intake.save_data({}, None)
 
         @transport.event_handler("on_interruption")
         async def on_interruption(transport, participant, *args):
-            # Save data when there's an interruption
-            if hasattr(intake, 'call_data') and intake.call_data:
-                intake.call_data["call_status"] = "interrupted"
-                await intake.save_data(intake.call_data, None)
-            print(f"Call interrupted by participant {participant['id']}")
+            # Handle interruptions gracefully
+            logger.info(f"Interruption detected from participant {participant['id']}")
 
         runner = PipelineRunner()
         await runner.run(task)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description="Pipecat Daily Example")
+    parser.add_argument("-u", type=str, help="Room URL")
+    parser.add_argument("-t", type=str, help="Token")
+    parser.add_argument("-i", type=str, help="Call ID")
+    parser.add_argument("-s", type=str, help="SIP URI")
+    config = parser.parse_args()
+
+    asyncio.run(main(config.u, config.t, config.i, config.s))

@@ -1,136 +1,139 @@
-# Neurality Health AI Voice Agent
+# Neurality Health AI — Voice Agent
 
-A voice-based AI assistant for healthcare patient engagement, capable of understanding and responding to patient requests in multiple languages.
+## Overview
+A production-ready, multimodal voice agent for patient engagement, built with FastAPI, Pipecat, and modern LLMs. Supports both local and Dockerized workflows.
 
-## Features
+---
 
-- Real-time speech-to-text transcription
-- Multi-language support (English and Spanish)
-- Intent classification for patient requests
-- Natural language response generation
-- Structured data storage in JSON format
-- Integration with Daily.co for voice calls
-- Cartesia TTS for natural voice responses
+## 1. Environment Setup
 
-## Prerequisites
-
-- Python 3.9+
-- OpenAI API key
-- Daily.co API key
-- Cartesia API key (optional)
-
-## Installation
-
-1. Clone the repository:
-```bash
-git clone https://github.com/your-username/pipecat-voice-agent.git
+### 1.1. Clone the Repository
+```sh
+git clone <your-repo-url>
 cd pipecat-voice-agent
 ```
 
-2. Create and activate a virtual environment:
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+### 1.2. Prepare the Environment File
+- Copy the example file and fill in your API keys:
+```sh
+cp .env.example .env
+# Edit .env and add your credentials:
+# DAILY_API_KEY=...
+# DAILY_API_URL=https://api.daily.co/v1
+# TWILIO_ACCOUNT_SID=...
+# TWILIO_AUTH_TOKEN=...
+# OPENAI_API_KEY=...
+# CARTESIA_API_KEY=...
 ```
 
-3. Install dependencies:
-```bash
+---
+
+## 2. Running with Docker (Recommended)
+
+### 2.1. Build the Docker Image
+```sh
+docker-compose build
+```
+
+### 2.2. Start the Service
+```sh
+docker-compose up
+```
+
+- The app will be available at [http://localhost:7860/](http://localhost:7860/)
+- The `.env` file is mounted at runtime (not baked into the image).
+- Data and logs are persisted in the `./data` directory.
+
+---
+
+## 3. Running Locally (Without Docker)
+
+### 3.1. Create a Virtual Environment
+```sh
+python3 -m venv venv
+source venv/bin/activate
+```
+
+### 3.2. Install Dependencies
+```sh
 pip install -r requirements.txt
 ```
 
-4. Copy the environment template and fill in your API keys:
-```bash
-cp .env.example .env
+### 3.3. Run the Server
+```sh
+python server.py
+```
+- The app will be available at [http://localhost:7860/](http://localhost:7860/)
+
+---
+
+## 4. Running with an Audio File (Batch Mode)
+
+You can process a `.wav` or `.mp3` file directly:
+```sh
+python server.py -au /path/to/yourfile.wav
+```
+- The agent's response will be printed to the console.
+
+---
+
+## 5. Twilio & Webhook Setup
+
+### 5.1. Install and Start ngrok (for Local Testing)
+
+1. **Install ngrok:**
+   - [Download ngrok](https://ngrok.com/download) and follow the install instructions for your OS.
+   - Or, on macOS:
+     ```sh
+     brew install ngrok
+     ```
+2. **Authenticate ngrok (first time only):**
+   - Sign up at [ngrok.com](https://ngrok.com/) and get your authtoken from your dashboard.
+   - Run:
+     ```sh
+     ngrok config add-authtoken <your-ngrok-authtoken>
+     ```
+3. **Start ngrok on your FastAPI port (default 7860):**
+   ```sh
+   ngrok http 7860
+   ```
+4. **Copy the HTTPS Forwarding URL** shown in the ngrok terminal (e.g., `https://xxxx-xx-xx-xx.ngrok-free.app`).
+
+### 5.2. Configure Twilio Webhooks
+
+1. Go to your [Twilio Console](https://console.twilio.com/).
+2. Navigate to **Phone Numbers > Manage > Active numbers** and select your number.
+3. Under **Voice & Fax** configuration:
+   - **A call comes in:**
+     - Set to **Webhook**
+     - URL: `https://<your-ngrok-url>/call` (e.g., `https://xxxx-xx-xx-xx.ngrok-free.app/call`)
+     - HTTP POST
+   - **Call status changes:**
+     - URL: `https://<your-ngrok-url>/call-status`
+     - HTTP POST
+4. **Save** your changes.
+
+### 5.3. Test the Integration
+- Call your Twilio number. You should hear hold music, then be connected to your voice agent.
+- The ngrok terminal will show incoming requests.
+
+---
+
+## 6. .env.example
+```
+DAILY_API_KEY=your_daily_api_key
+DAILY_API_URL=https://api.daily.co/v1
+TWILIO_ACCOUNT_SID=your_twilio_account_sid
+TWILIO_AUTH_TOKEN=your_twilio_auth_token
+OPENAI_API_KEY=your_openai_api_key
+CARTESIA_API_KEY=your_cartesia_api_key
 ```
 
-## Configuration
+---
 
-Edit the `.env` file with your API keys and configuration:
+## 7. Troubleshooting
+- Ensure your `.env` file is present and filled out.
+- For Docker, use `docker-compose logs` to view logs.
+- For local, check the terminal output for errors.
+- If you change dependencies, rebuild the Docker image.
 
-```env
-OPENAI_API_KEY=your_openai_api_key_here
-DAILY_API_KEY=your_daily_api_key_here
-CARTESIA_API_KEY=your_cartesia_api_key_here
-DAILY_ROOM_URL=https://your-domain.daily.co/your-room
-DAILY_ROOM_NAME=your-room-name
-```
-
-## Usage
-
-1. Start the voice agent:
-```bash
-python src/voice_agent/main.py
-```
-
-2. Join the Daily.co room using the provided URL.
-
-3. The agent will:
-   - Transcribe your speech
-   - Classify your intent
-   - Generate appropriate responses
-   - Store the conversation data
-
-## Project Structure
-
-```
-pipecat-voice-agent/
-├── src/
-│   └── voice_agent/
-│       ├── core/           # Core functionality
-│       ├── services/       # External service integrations
-│       ├── utils/          # Utility functions
-│       └── config/         # Configuration management
-├── tests/                  # Test suite
-├── data/                   # Data storage
-├── assets/                 # Static assets
-├── .env.example           # Environment template
-├── requirements.txt       # Dependencies
-└── README.md             # Documentation
-```
-
-## Development
-
-### Running Tests
-
-```bash
-pytest tests/
-```
-
-### Code Quality
-
-```bash
-# Format code
-black src/ tests/
-
-# Sort imports
-isort src/ tests/
-
-# Type checking
-mypy src/
-
-# Linting
-ruff check src/ tests/
-```
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Contributing
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## Security
-
-- API keys are stored in environment variables
-- All data is stored locally
-- No sensitive patient information is transmitted to third parties
-- Regular security audits are performed
-
-## Support
-
-For support, please open an issue in the GitHub repository or contact the maintainers.

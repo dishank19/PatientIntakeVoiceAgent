@@ -1,5 +1,5 @@
-# Use Python 3.9 slim image
-FROM python:3.9-slim
+# Use Python 3.10 slim image
+FROM python:3.10-slim
 
 # Set working directory
 WORKDIR /app
@@ -33,4 +33,4 @@ RUN useradd -m -u 1000 appuser && \
 USER appuser
 
 # Run the application
-CMD ["python", "-m", "voice_agent.main"] 
+CMD ["python", "server.py"] 

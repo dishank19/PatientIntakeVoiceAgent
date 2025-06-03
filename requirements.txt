@@ -1,7 +1,7 @@
 python-dotenv>=1.0.0
 fastapi[all]>=0.109.0
 uvicorn>=0.27.0
-pipecat-ai[daily,cartesia,openai,silero]>=0.1.0
+pipecat-ai[daily,cartesia,openai,silero]
 pydantic>=2.6.0
 pydantic-settings>=2.1.0
 loguru>=0.7.2
@@ -14,3 +14,6 @@ black>=24.1.0
 isort>=5.13.0
 mypy>=1.8.0
 ruff>=0.2.0
+pyngrok
+twilio>=7.0.0
+requests>=2.0.0

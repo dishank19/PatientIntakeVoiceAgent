@@ -9,8 +9,8 @@ with open("requirements.txt", "r", encoding="utf-8") as fh:
 setup(
     name="voice-agent",
     version="0.1.0",
-    author="Neurality Health AI Team",
-    author_email="team@neurality.ai",
+    author="Dishank",
+    author_email="dishankjhaveri@gmail.com",
     description="A voice-based AI assistant for healthcare patient engagement",
     long_description=long_description,
     long_description_content_type="text/markdown",
