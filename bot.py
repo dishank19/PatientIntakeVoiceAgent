@@ -140,35 +140,35 @@ Start by introducing yourself and asking for the patient's name. Then, ask what 
         self.is_spanish = params.arguments.get("is_spanish", False)
         
         # Move on to prescriptions
-        params.context.set_tools(
-            [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "list_prescriptions",
-                        "description": "Once the user has provided a list of their prescription medications, call this function.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "prescriptions": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "medication": {
-                                                "type": "string",
-                                                "description": "The medication's name",
-                                            },
-                                            "dosage": {
-                                                "type": "string",
-                                                "description": "The prescription's dosage",
+            params.context.set_tools(
+                [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "list_prescriptions",
+                            "description": "Once the user has provided a list of their prescription medications, call this function.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "prescriptions": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "medication": {
+                                                    "type": "string",
+                                                    "description": "The medication's name",
+                                                },
+                                                "dosage": {
+                                                    "type": "string",
+                                                    "description": "The prescription's dosage",
+                                                },
                                             },
                                         },
-                                    },
-                                }
+                                    }
+                                },
                             },
                         },
-                    },
                 },
                 {
                     "type": "function",
@@ -274,12 +274,12 @@ Start by introducing yourself and asking for the patient's name. Then, ask what 
                 }
             )
         else:
-            params.context.add_message(
-                {
-                    "role": "system",
+        params.context.add_message(
+            {
+                "role": "system",
                     "content": "And is there anything you're allergic to?",
-                }
-            )
+            }
+        )
         await params.llm.queue_frame(
             OpenAILLMContextFrame(params.context), FrameDirection.DOWNSTREAM
         )
@@ -346,12 +346,12 @@ Start by introducing yourself and asking for the patient's name. Then, ask what 
                 }
             )
         else:
-            params.context.add_message(
-                {
-                    "role": "system",
+        params.context.add_message(
+            {
+                "role": "system",
                     "content": "Is there any medical condition the doctor should know about?",
-                }
-            )
+            }
+        )
         await params.llm.queue_frame(
             OpenAILLMContextFrame(params.context), FrameDirection.DOWNSTREAM
         )
@@ -418,12 +418,12 @@ Start by introducing yourself and asking for the patient's name. Then, ask what 
                 }
             )
         else:
-            params.context.add_message(
-                {
-                    "role": "system",
+        params.context.add_message(
+            {
+                "role": "system",
                     "content": "And what brings you in today?",
-                }
-            )
+            }
+        )
         await params.llm.queue_frame(
             OpenAILLMContextFrame(params.context), FrameDirection.DOWNSTREAM
         )
@@ -570,7 +570,7 @@ async def main(room_url: str, token: str, call_id: str, sip_uri: str):
                 context_aggregator.assistant(),  # Assistant responses
             ]
         )
-        
+
         # Store pipeline reference in intake processor
         intake.pipeline = pipeline
         

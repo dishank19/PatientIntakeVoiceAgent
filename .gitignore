@@ -57,7 +57,7 @@ logs/
 
 
 assets/
-
+src/
 *.pyc
 *.pyo
 *.pyd
