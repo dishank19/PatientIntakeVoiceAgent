@@ -64,7 +64,7 @@ src/
 *.mp3
 *.wav
 data
-tests/
+
 # C extensions
 *.so
 
