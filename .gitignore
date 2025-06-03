@@ -1,8 +1,8 @@
 # Python virtual environment
 pipecat/
 venv/
-env/
-.env/
+
+.env
 
 # Python bytecode
 __pycache__/
@@ -25,8 +25,6 @@ build/
 logs/
 
 # Local development settings
-.env
-.env.local
 
 # Large binary files
 *.so
@@ -56,7 +54,7 @@ logs/
 .DS_Store
 
 # Byte-compiled / optimized / DLL files
-*.env
+
 
 assets/
 src/
@@ -85,8 +83,7 @@ var/
 *.egg
 
 # Virtual environments
-ENV/
-.venv/
+
 
 # PyInstaller
 *.manifest
@@ -127,8 +124,8 @@ coverage.xml
 data/
 
 # Environment variables
-*.env.*
-!.env.example
+
+
 
 # Docker
 *.pid
