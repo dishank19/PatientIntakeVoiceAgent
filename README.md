@@ -131,3 +131,21 @@ CARTESIA_API_KEY=your_cartesia_api_key
 - For local, check the terminal output for errors.
 - If you change dependencies, rebuild the Docker image.
 
+---
+
+## 8. Testing and Logging
+
+### 8.1. Running Tests
+To run the tests, execute the following command:
+```sh
+python -m pytest
+```
+
+### 8.2. Logging
+Logs are stored in the `./data` directory. You can view them using:
+```sh
+cat ./data/logs/app.log
+```
+
+**Disclaimer:** The testing and logging functionality may not work as intended. Please report any issues you encounter.
+
