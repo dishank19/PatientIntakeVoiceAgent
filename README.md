@@ -1,19 +1,13 @@
 # Patient Interaction Voice Agent
 
 ## Overview
-A production-ready, multimodal voice agent for patient engagement, built with FastAPI, Pipecat, and modern LLMs. Supports both local and Dockerized workflows.
+A voice agent for patient engagement, built with FastAPI, Pipecat, and Cartesia TTS. Supports both local and Dockerized workflows.
 
 ---
 
 ## 1. Environment Setup
 
-### 1.1. Clone the Repository
-```sh
-git clone <your-repo-url>
-cd pipecat-voice-agent
-```
-
-### 1.2. Prepare the Environment File
+### 1. Prepare the Environment File
 - Copy the example file and fill in your API keys:
 ```sh
 cp .env.example .env

@@ -145,6 +145,7 @@ test-output/
 
 # Ignore coverage
 .coverage
+instructions.md
 
 # Ignore build artifacts
 *.o
