@@ -169,7 +169,7 @@ Important conversation guidelines:
         response_message = ""
 
         if not intent_provided:
-            if self.is_spanish:
+        if self.is_spanish:
                 response_message = f"Gracias, {patient_name}. <break time='1s'/> ¿Y cuál es el motivo de su llamada hoy?"
             else:
                 response_message = f"Thanks, {patient_name}. <break time='1s'/> And what is the reason for your call today?"
@@ -192,10 +192,10 @@ Important conversation guidelines:
             
             if current_tools_config:
                 params.context.set_tools(current_tools_config)
-
-            if self.is_spanish:
+        
+        if self.is_spanish:
                 response_message = f"Entendido. Usted se contactó por {self.call_data.get('intent', 'su consulta')}. <break time='1s'/> ¿Hay algo más en lo que pueda ayudarle o alguna otra información que desee compartir?"
-            else:
+        else:
                 response_message = f"Okay, I understand you're calling about {self.call_data.get('intent', 'your inquiry')}. <break time='1s'/> Is there anything else I can help you with, or any other information you'd like to share?"
         
         await params.result_callback([{"role": "system", "content": response_message}])
@@ -206,10 +206,10 @@ Important conversation guidelines:
         
         all_medical_info_keys = ["prescriptions", "allergies", "conditions"]
         provided_any_medical_info = any(params.arguments.get(key) for key in all_medical_info_keys)
-
+        
         if not provided_any_medical_info and not self.call_data.get("asked_general_medical_once", False):
             self.call_data["asked_general_medical_once"] = True
-            if self.is_spanish:
+        if self.is_spanish:
                 response_content = "¿Hay alguna alergia o condición médica preexistente que el doctor deba conocer?"
             else:
                 response_content = "Just to be thorough, are there any allergies or existing medical conditions the doctor should be aware of?"
@@ -389,7 +389,7 @@ Important conversation guidelines:
             with open(filepath, "w") as f:
                 json.dump(final_data_to_save, f, indent=2)
             logger.info(f"Saved call data for {self.twilio_call_sid} to {filepath}")
-
+                
         except Exception as e:
             logger.error(f"Error saving data for call {self.twilio_call_sid if hasattr(self, 'twilio_call_sid') else 'UNKNOWN'}: {e}")
         
@@ -517,7 +517,7 @@ async def main(room_url: str, token: str, twilio_call_sid: str, daily_room_sip_u
         async def on_first_participant_joined(transport_ref, participant): # Renamed to transport_ref to avoid clash
             await transport_ref.capture_participant_transcription(participant["id"])
             # Let LLM initiate conversation based on system prompt in IntakeProcessor's context
-            await task.queue_frames([OpenAILLMContextFrame(context)]) 
+            await task.queue_frames([OpenAILLMContextFrame(context)])
 
         @transport.event_handler("on_participant_left")
         async def on_participant_left(transport_ref, participant, *args):
@@ -529,7 +529,7 @@ async def main(room_url: str, token: str, twilio_call_sid: str, daily_room_sip_u
 
         runner = PipelineRunner()
         try:
-            await runner.run(task)
+        await runner.run(task)
         finally:
             logger.info("Pipeline task finished or runner exited.")
             # Transport cleanup should be handled by the runner or Daily SDK when connection drops

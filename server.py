@@ -404,11 +404,11 @@ async def handle_call_status(request: Request):
     """
     Handle Twilio call status updates
     """
-    form_data = await request.form()
-    data = dict(form_data)
-    call_sid = data.get('CallSid')
-    call_status = data.get('CallStatus')
-
+        form_data = await request.form()
+        data = dict(form_data)
+        call_sid = data.get('CallSid')
+        call_status = data.get('CallStatus')
+        
     logger.info(f"Call {call_sid} status update: {call_status}")
 
     try:
@@ -686,7 +686,7 @@ async def create_daily_room_with_sip() -> tuple[str, str, str]:
                                     logger.info(f"Extracted Daily SIP URI (from FALLBACK sip.endpoints) for room {room_name}: {daily_sip_uri_for_room}")
                                 else:
                                     logger.warning(f"SIP URI string not found in FALLBACK sip.endpoints for {room_name}. Data: {sip_info}")
-                            except Exception as e:
+        except Exception as e:
                                 logger.warning(f"Could not extract SIP URI from FALLBACK sip.endpoints for {room_name}: {e}. Data: {sip_info}")
                         elif isinstance(sip_info.get("uris"), list) and sip_info["uris"]:
                             try:
