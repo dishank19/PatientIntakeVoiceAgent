@@ -200,26 +200,105 @@ Important conversation guidelines:
         
         await params.result_callback([{"role": "system", "content": response_message}])
 
+    def _list_to_natural_language(self, items: list[str], lang_map: dict, conjunction: str) -> str:
+        if not items:
+            return ""
+        
+        mapped_items = [lang_map.get(item, item) for item in items]
+
+        if len(mapped_items) == 1:
+            return mapped_items[0]
+        
+        if len(mapped_items) == 2:
+            return f"{mapped_items[0]} {conjunction} {mapped_items[1]}"
+        
+        # For 3 or more items, use a comma-separated list with the conjunction before the last item
+        return f"{', '.join(mapped_items[:-1])} {conjunction} {mapped_items[-1]}"
+
     async def collect_medical_info(self, params: FunctionCallParams):
         self.call_data.update(params.arguments)
-        response_content = ""
+
+        # Initialize tracking in self.call_data if not present
+        if "medical_topics_to_cover" not in self.call_data:
+            self.call_data["medical_topics_to_cover"] = ["allergies", "conditions", "prescriptions"]
+        if "medical_info_initial_ask_done" not in self.call_data:
+            self.call_data["medical_info_initial_ask_done"] = False
+        if "medical_info_follow_up_done" not in self.call_data:
+            self.call_data["medical_info_follow_up_done"] = False
+
+        # Identify what information was provided in this specific turn by the LLM
+        newly_provided_topics_this_turn = []
+        topics_to_check = ["allergies", "conditions", "prescriptions"]
+        for topic in topics_to_check:
+            # Check if the LLM provided a non-empty list/array for the topic
+            if params.arguments.get(topic) and isinstance(params.arguments.get(topic), list) and len(params.arguments.get(topic)) > 0:
+                newly_provided_topics_this_turn.append(topic)
+                if topic in self.call_data["medical_topics_to_cover"]:
+                    self.call_data["medical_topics_to_cover"].remove(topic)
         
-        all_medical_info_keys = ["prescriptions", "allergies", "conditions"]
-        provided_any_medical_info = any(params.arguments.get(key) for key in all_medical_info_keys)
+        response_message = ""
+
+        # Language strings
+        topic_map_es = {"allergies": "alergias", "conditions": "condiciones médicas", "prescriptions": "prescripciones"}
+        topic_map_en = {"allergies": "allergies", "conditions": "medical conditions", "prescriptions": "prescriptions"}
         
-        if not provided_any_medical_info and not self.call_data.get("asked_general_medical_once", False):
-            self.call_data["asked_general_medical_once"] = True
-            if self.is_spanish:
-                response_content = "¿Hay alguna alergia o condición médica preexistente que el doctor deba conocer?"
-            else:
-                response_content = "Just to be thorough, are there any allergies or existing medical conditions the doctor should be aware of?"
+        lang_and_es = "y"
+        lang_and_en = "and"
+        lang_or_es = "o" # Used for questions about remaining items
+        lang_or_en = "or"
+
+        current_topic_map = topic_map_es if self.is_spanish else topic_map_en
+        current_and_conjunction = lang_and_es if self.is_spanish else lang_and_en
+        current_or_conjunction = lang_or_es if self.is_spanish else lang_or_en
+
+        lang_initial_medical_q_es = "¿Para asegurarnos de tener todos los detalles, podría informarme sobre cualquier prescripción actual, alergia o condición médica preexistente que el médico deba conocer?"
+        lang_initial_medical_q_en = "To ensure we have all details, could you tell me about any current prescriptions, allergies, or existing medical conditions the doctor should be aware of?"
+        
+        lang_thank_you_for_info_es = "Gracias por la información sobre sus"
+        lang_thank_you_for_info_en = "Thanks for the information about your"
+        lang_thank_you_general_es = "Gracias por compartir eso."
+        lang_thank_you_general_en = "Thanks for sharing that."
+
+        lang_follow_up_intro_es = "Solo para estar seguros,"
+        lang_follow_up_intro_en = "Just to be sure,"
+        
+        lang_follow_up_query_es = "¿podría también informarme sobre"
+        lang_follow_up_query_en = "could you also tell me about any"
+
+        lang_anything_else_medical_es = "¿Hay algo más que desee agregar sobre estos temas médicos?"
+        lang_anything_else_medical_en = "Is there anything else you'd like to add on these medical topics?"
+        
+        lang_generic_thanks_and_continue_es = "Entendido, gracias. ¿Hay algo más en lo que pueda ayudarle?"
+        lang_generic_thanks_and_continue_en = "Okay, thank you. Is there anything else I can help with?"
+
+        if not self.call_data["medical_info_initial_ask_done"]:
+            response_message = lang_initial_medical_q_es if self.is_spanish else lang_initial_medical_q_en
+            self.call_data["medical_info_initial_ask_done"] = True
+        elif self.call_data["medical_topics_to_cover"] and not self.call_data["medical_info_follow_up_done"]:
+            thank_you_part = ""
+            if newly_provided_topics_this_turn:
+                natural_newly_provided = self._list_to_natural_language(newly_provided_topics_this_turn, current_topic_map, current_and_conjunction)
+                thank_you_part = f"{lang_thank_you_for_info_es if self.is_spanish else lang_thank_you_for_info_en} {natural_newly_provided}. "
+
+            follow_up_intro = lang_follow_up_intro_es if self.is_spanish else lang_follow_up_intro_en
+            natural_missing_topics = self._list_to_natural_language(self.call_data["medical_topics_to_cover"], current_topic_map, current_or_conjunction)
+            
+            follow_up_query_base = lang_follow_up_query_es if self.is_spanish else lang_follow_up_query_en
+            
+            response_message = f"{thank_you_part}{follow_up_intro} {follow_up_query_base} {natural_missing_topics}?"
+            self.call_data["medical_info_follow_up_done"] = True
         else:
-            if self.is_spanish:
-                response_content = "Gracias por esa información. <break time='1s'/> ¿Hay algo más que quiera mencionar?"
+            # All topics covered, or follow-up already done
+            if newly_provided_topics_this_turn:
+                natural_newly_provided = self._list_to_natural_language(newly_provided_topics_this_turn, current_topic_map, current_and_conjunction)
+                thank_you_part = f"{lang_thank_you_for_info_es if self.is_spanish else lang_thank_you_for_info_en} {natural_newly_provided}. "
+                anything_else_part = lang_anything_else_medical_es if self.is_spanish else lang_anything_else_medical_en
+                response_message = f"{thank_you_part}{anything_else_part}"
             else:
-                response_content = "Thanks for that information. <break time='1s'/> Is there anything else you'd like to mention?"
-        
-        await params.result_callback([{"role": "system", "content": response_content}])
+                # Nothing new provided, and we're past follow-up or all covered.
+                response_message = lang_generic_thanks_and_continue_es if self.is_spanish else lang_generic_thanks_and_continue_en
+            
+        await params.result_callback([{"role": "system", "content": response_message}])
 
     def _get_next_available_slot(self, current_hour_24: int) -> (int, str):
         original_hour = current_hour_24
