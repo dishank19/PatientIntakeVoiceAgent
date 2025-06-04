@@ -11,14 +11,16 @@ import wave
 import json
 from datetime import datetime
 import argparse
+import random # Added for suggesting random minutes
 
 import aiohttp
 from dotenv import load_dotenv
 from loguru import logger
 from runner import configure
+from twilio.rest import Client # Added Twilio client
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import OutputAudioRawFrame
+from pipecat.frames.frames import OutputAudioRawFrame, EndTaskFrame # Added EndTaskFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -59,26 +61,32 @@ for file in sound_files:
 
 
 class IntakeProcessor:
-    def __init__(self, context: OpenAILLMContext):
-        print(f"Initializing context from IntakeProcessor")
-        # Initialize call data dictionary
+    def __init__(self, context: OpenAILLMContext, twilio_call_sid: str):
+        print(f"Initializing context from IntakeProcessor for CallSid: {twilio_call_sid}")
+        self.twilio_call_sid = twilio_call_sid  # Store the CallSid
         self.call_data = {}
         self.is_spanish = False
-        self.context = context  # Store context for access in handlers
-        self.pipeline = None  # Will be set when pipeline is created
+        self.context = context
+        self.pipeline = None
         context.add_message(
             {
                 "role": "system",
-                "content": """You are Jessica, an agent for a company called Tri-County Health Services. Your job is to collect important information from the user before their doctor visit. You should be polite and professional. You're not a medical professional, so you shouldn't provide any advice. Keep your responses short. Your job is to collect information to give to a doctor. Don't make assumptions about what values to plug into functions. Ask for clarification if a user response is ambiguous.
+                "content": """You are Jessica, an agent for Tri-County Health Services. Your job is to collect important information and assist with appointment scheduling. Be polite, professional, and keep responses natural and relatively short. You are not a medical professional.
 
 Important conversation guidelines:
-1. After each question, wait for the user to finish speaking completely before responding
-2. If the user indicates they have nothing else to add (e.g., "that's all", "no thank you", "that's everything"), end the call politely
-3. If ending the call, mention looking forward to their visit if they have an appointment scheduled
-4. Use natural pauses in your speech to make the conversation feel more natural
-5. If you detect the user speaking Spanish, switch to Spanish and continue the conversation in Spanish while maintaining the same information collection flow
-
-Start by introducing yourself and asking for the patient's name. Then, ask what brings them in today. Based on their response, classify their intent and call the classify_intent function.""",
+1. Start by introducing yourself and asking for the patient's name.
+2. Wait for the user to finish speaking before responding. Use <break time='1s'/> for noticeable pauses.
+3. Let the patient guide the conversation.
+4. If the patient mentions medications, allergies, or conditions, use 'collect_medical_info'.
+5. If they don't mention these, and the main interaction (like scheduling) is concluding, ask once if there's anything else medical the doctor should know.
+6. For appointment requests:
+    - Use the 'end_call' function with action 'request_schedule'. Provide 'requested_date_time' (e.g., "tomorrow 3 PM") AND 'requested_hour_24_format' (e.g., 15 for 3 PM).
+    - If a proposed time is confirmed by the patient, call 'end_call' with action 'confirm_schedule' and 'is_appointment_confirmed_by_patient': true. Include the confirmed 'requested_date_time' and 'requested_hour_24_format'.
+    - If a proposed time is declined, or the patient wants a different time, call 'end_call' with action 'request_schedule' and the new 'requested_date_time' and 'requested_hour_24_format'.
+    - If the patient wants to stop scheduling after a decline, call 'end_call' with action 'terminate_interaction'.
+7. When the conversation is truly over, or after a successful booking and no further questions, call 'end_call' with action 'terminate_interaction'. If an appointment was booked, provide 'final_appointment_details_for_goodbye'.
+8. If Spanish is detected, switch to Spanish for all interactions.
+""",
             }
         )
         context.set_tools(
@@ -87,26 +95,29 @@ Start by introducing yourself and asking for the patient's name. Then, ask what 
                     "type": "function",
                     "function": {
                         "name": "classify_intent",
-                        "description": "Classify the intent of the patient's visit based on their response.",
+                        "description": "Classify the initial intent of the patient's visit after they provide their name and reason for calling.",
                         "parameters": {
                             "type": "object",
                             "properties": {
-                                "patient_name": {
-                                    "type": "string",
-                                    "description": "The patient's full name",
-                                },
-                                "intent": {
-                                    "type": "string",
-                                    "description": "The classified intent of the visit (e.g., appointment_scheduling, billing_inquiry, prescription_refill, general_inquiry, emergency, follow_up)",
-                                },
-                                "details": {
-                                    "type": "string",
-                                    "description": "Additional details about the intent",
-                                },
-                                "is_spanish": {
-                                    "type": "boolean",
-                                    "description": "Whether the user is speaking Spanish",
-                                }
+                                "patient_name": {"type": "string", "description": "The patient's full name"},
+                                "intent": {"type": "string", "description": "Classified intent (e.g., appointment_scheduling, billing_inquiry, general_inquiry)"},
+                                "details": {"type": "string", "description": "Additional details about the intent"},
+                                "is_spanish": {"type": "boolean", "description": "Is the user speaking Spanish?"}
+                            },
+                        },
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "collect_medical_info",
+                        "description": "Collect medical information (prescriptions, allergies, conditions) if mentioned by the patient or if appropriate to ask.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "prescriptions": {"type": "array", "items": {"type": "object", "properties": {"medication": {"type": "string"}, "dosage": {"type": "string"}}}},
+                                "allergies": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}}}},
+                                "conditions": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}}}}
                             },
                         },
                     },
@@ -115,411 +126,297 @@ Start by introducing yourself and asking for the patient's name. Then, ask what 
                     "type": "function",
                     "function": {
                         "name": "end_call",
-                        "description": "End the call when the user indicates they have nothing else to add.",
+                        "description": "Handles appointment scheduling logic (requests, availability checks, confirmations) or concludes the call.",
                         "parameters": {
                             "type": "object",
                             "properties": {
-                                "has_appointment": {
-                                    "type": "boolean",
-                                    "description": "Whether the patient has an appointment scheduled",
-                                },
-                                "appointment_date": {
+                                "action": {
                                     "type": "string",
-                                    "description": "The date of the appointment if scheduled",
+                                    "enum": ["request_schedule", "confirm_schedule", "terminate_interaction"],
+                                    "description": "The specific action: 'request_schedule' to check/propose a time, 'confirm_schedule' to finalize or decline a proposed time, 'terminate_interaction' to end the call."
+                                },
+                                "requested_date_time": {
+                                    "type": "string",
+                                    "description": "The full date and time string for an appointment request (e.g., 'tomorrow 3 PM', 'next Tuesday at 10 AM'). Used with 'request_schedule'."
+                                },
+                                "requested_hour_24_format": {
+                                    "type": "integer",
+                                    "description": "The hour (0-23) of the 'requested_date_time'. Essential for availability check. Used with 'request_schedule'."
+                                },
+                                "is_appointment_confirmed_by_patient": {
+                                    "type": "boolean",
+                                    "description": "Set to true if the patient confirms a proposed/checked appointment slot. Set to false if they decline it. Used with 'confirm_schedule'."
+                                },
+                                "final_appointment_details_for_goodbye": {
+                                    "type": "string",
+                                    "description": "If an appointment was successfully booked, this is the confirmed time string (e.g. 'tomorrow 3 PM') to be mentioned in the closing statement. Only use with 'terminate_interaction' after a successful booking."
                                 }
                             },
-                        },
-                    },
+                            "required": ["action"]
+                        }
+                    }
                 }
             ]
         )
 
     async def classify_intent(self, params: FunctionCallParams):
-        # Store initial data
         self.call_data.update(params.arguments)
         self.is_spanish = params.arguments.get("is_spanish", False)
-        
-        # Move on to prescriptions
-            params.context.set_tools(
-                [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "list_prescriptions",
-                            "description": "Once the user has provided a list of their prescription medications, call this function.",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "prescriptions": {
-                                        "type": "array",
-                                        "items": {
-                                            "type": "object",
-                                            "properties": {
-                                                "medication": {
-                                                    "type": "string",
-                                                    "description": "The medication's name",
-                                                },
-                                                "dosage": {
-                                                    "type": "string",
-                                                    "description": "The prescription's dosage",
-                                                },
-                                            },
-                                        },
-                                    }
-                                },
-                            },
-                        },
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "end_call",
-                        "description": "End the call when the user indicates they have nothing else to add.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "has_appointment": {
-                                    "type": "boolean",
-                                    "description": "Whether the patient has an appointment scheduled",
-                                },
-                                "appointment_date": {
-                                    "type": "string",
-                                    "description": "The date of the appointment if scheduled",
-                                }
-                            },
-                        },
-                    },
-                }
-            ]
-        )
-        
-        if self.is_spanish:
-            await params.result_callback(
-                [
-                    {
-                        "role": "system",
-                        "content": "Gracias por esa información. <break time='1s'/> ¿Podría decirme qué medicamentos está tomando actualmente?",
-                    }
-                ]
-            )
-        else:
-            await params.result_callback(
-                [
-                    {
-                        "role": "system",
-                        "content": "Thanks for that information. <break time='1s'/> Could you tell me what medications you're currently taking?",
-                    }
-                ]
-            )
+        patient_name = params.arguments.get("patient_name", "there")
 
-    async def list_prescriptions(self, params: FunctionCallParams):
-        # Store prescriptions data
-        self.call_data.update(params.arguments)
+        intent_provided = params.arguments.get("intent")
         
-        # Move on to allergies
-        params.context.set_tools(
-            [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "list_allergies",
-                        "description": "Once the user has provided a list of their allergies, call this function.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "allergies": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "name": {
-                                                "type": "string",
-                                                "description": "What the user is allergic to",
-                                            }
-                                        },
-                                    },
-                                }
-                            },
-                        },
-                    },
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "end_call",
-                        "description": "End the call when the user indicates they have nothing else to add.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "has_appointment": {
-                                    "type": "boolean",
-                                    "description": "Whether the patient has an appointment scheduled",
-                                },
-                                "appointment_date": {
-                                    "type": "string",
-                                    "description": "The date of the appointment if scheduled",
-                                }
-                            },
-                        },
-                    },
-                }
-            ]
-        )
-        
-        if self.is_spanish:
-            params.context.add_message(
-                {
-                    "role": "system",
-                    "content": "¿Y hay algo a lo que sea alérgico?",
-                }
-            )
-        else:
-        params.context.add_message(
-            {
-                "role": "system",
-                    "content": "And is there anything you're allergic to?",
-            }
-        )
-        await params.llm.queue_frame(
-            OpenAILLMContextFrame(params.context), FrameDirection.DOWNSTREAM
-        )
+        response_message = ""
 
-    async def list_allergies(self, params: FunctionCallParams):
-        # Store allergies data
-        self.call_data.update(params.arguments)
-        
-        # Move on to conditions
-        params.context.set_tools(
-            [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "list_conditions",
-                        "description": "Once the user has provided a list of their medical conditions, call this function.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "conditions": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "name": {
-                                                "type": "string",
-                                                "description": "The user's medical condition",
-                                            }
-                                        },
-                                    },
-                                }
-                            },
-                        },
-                    },
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "end_call",
-                        "description": "End the call when the user indicates they have nothing else to add.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "has_appointment": {
-                                    "type": "boolean",
-                                    "description": "Whether the patient has an appointment scheduled",
-                                },
-                                "appointment_date": {
-                                    "type": "string",
-                                    "description": "The date of the appointment if scheduled",
-                                }
-                            },
-                        },
-                    },
-                }
-            ]
-        )
-        
-        if self.is_spanish:
-            params.context.add_message(
-                {
-                    "role": "system",
-                    "content": "¿Hay alguna condición médica que el doctor deba conocer?",
-                }
-            )
+        if not intent_provided:
+            if self.is_spanish:
+                response_message = f"Gracias, {patient_name}. <break time='1s'/> ¿Y cuál es el motivo de su llamada hoy?"
+            else:
+                response_message = f"Thanks, {patient_name}. <break time='1s'/> And what is the reason for your call today?"
+            # Tools remain as initially set (classify_intent, collect_medical_info, end_call)
         else:
-        params.context.add_message(
-            {
-                "role": "system",
-                    "content": "Is there any medical condition the doctor should know about?",
-            }
-        )
-        await params.llm.queue_frame(
-            OpenAILLMContextFrame(params.context), FrameDirection.DOWNSTREAM
-        )
+            self.call_data["intent"] = intent_provided
+            if params.arguments.get("details"):
+                self.call_data["details"] = params.arguments.get("details")
 
-    async def list_conditions(self, params: FunctionCallParams):
-        # Store conditions data
-        self.call_data.update(params.arguments)
-        
-        # Move on to visit reasons
-        params.context.set_tools(
-            [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "list_visit_reasons",
-                        "description": "Once the user has provided a list of the reasons they are visiting a doctor today, call this function.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "visit_reasons": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "name": {
-                                                "type": "string",
-                                                "description": "The user's reason for visiting the doctor",
-                                            }
-                                        },
-                                    },
-                                }
-                            },
-                        },
-                    },
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "end_call",
-                        "description": "End the call when the user indicates they have nothing else to add.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "has_appointment": {
-                                    "type": "boolean",
-                                    "description": "Whether the patient has an appointment scheduled",
-                                },
-                                "appointment_date": {
-                                    "type": "string",
-                                    "description": "The date of the appointment if scheduled",
-                                }
-                            },
-                        },
-                    },
-                }
-            ]
-        )
-        
-        if self.is_spanish:
-            params.context.add_message(
-                {
-                    "role": "system",
-                    "content": "¿Y qué le trae hoy a la consulta?",
-                }
-            )
-        else:
-        params.context.add_message(
-            {
-                "role": "system",
-                    "content": "And what brings you in today?",
-            }
-        )
-        await params.llm.queue_frame(
-            OpenAILLMContextFrame(params.context), FrameDirection.DOWNSTREAM
-        )
+            # Narrow tools if intent is now clear and not scheduling. 
+            # If intent IS scheduling, LLM will use end_call with action "request_schedule".
+            current_tools_config = []
+            # Keep classify_intent available if LLM needs to re-classify after more info.
+            if "classify_intent" in self.context._tools_by_name:
+                 current_tools_config.append(self.context._tools_by_name["classify_intent"].config)
+            if "collect_medical_info" in self.context._tools_by_name:
+                current_tools_config.append(self.context._tools_by_name["collect_medical_info"].config)
+            if "end_call" in self.context._tools_by_name:
+                current_tools_config.append(self.context._tools_by_name["end_call"].config)
+            
+            if current_tools_config:
+                params.context.set_tools(current_tools_config)
 
-    async def list_visit_reasons(self, params: FunctionCallParams):
-        # Store visit reasons data
+            if self.is_spanish:
+                response_message = f"Entendido. Usted se contactó por {self.call_data.get('intent', 'su consulta')}. <break time='1s'/> ¿Hay algo más en lo que pueda ayudarle o alguna otra información que desee compartir?"
+            else:
+                response_message = f"Okay, I understand you're calling about {self.call_data.get('intent', 'your inquiry')}. <break time='1s'/> Is there anything else I can help you with, or any other information you'd like to share?"
+        
+        await params.result_callback([{"role": "system", "content": response_message}])
+
+    async def collect_medical_info(self, params: FunctionCallParams):
         self.call_data.update(params.arguments)
+        response_content = ""
         
-        # Save the complete call data
-        await self.save_data(self.call_data, params.result_callback)
-        
-        if self.is_spanish:
-            await params.result_callback(
-                [
-                    {
-                        "role": "system",
-                        "content": "Gracias por toda esta información. <break time='1s'/> El doctor la revisará antes de su visita. ¿Hay algo más que quiera mencionar?",
-                    }
-                ]
-            )
+        all_medical_info_keys = ["prescriptions", "allergies", "conditions"]
+        provided_any_medical_info = any(params.arguments.get(key) for key in all_medical_info_keys)
+
+        if not provided_any_medical_info and not self.call_data.get("asked_general_medical_once", False):
+            self.call_data["asked_general_medical_once"] = True
+            if self.is_spanish:
+                response_content = "¿Hay alguna alergia o condición médica preexistente que el doctor deba conocer?"
+            else:
+                response_content = "Just to be thorough, are there any allergies or existing medical conditions the doctor should be aware of?"
         else:
-            await params.result_callback(
-                [
-                    {
-                        "role": "system",
-                        "content": "Thanks for all this information. <break time='1s'/> The doctor will review it before your visit. Is there anything else you'd like to mention?",
-                    }
-                ]
-            )
+            if self.is_spanish:
+                response_content = "Gracias por esa información. <break time='1s'/> ¿Hay algo más que quiera mencionar?"
+            else:
+                response_content = "Thanks for that information. <break time='1s'/> Is there anything else you'd like to mention?"
+        
+        await params.result_callback([{"role": "system", "content": response_content}])
+
+    def _get_next_available_slot(self, current_hour_24: int) -> (int, str):
+        original_hour = current_hour_24
+        suggested_hour_24 = original_hour
+        # Loop to find the next even hour
+        for _ in range(24): # Max 24 attempts to find next even hour
+            suggested_hour_24 = (suggested_hour_24 + 1) % 24
+            if suggested_hour_24 % 2 == 0:
+                # Format the suggested hour into a user-friendly string (e.g., "4:15 PM")
+                minutes_options = ["00", "15", "30", "45"]
+                suggested_minutes_str = random.choice(minutes_options)
+                
+                display_hour = suggested_hour_24 % 12
+                if display_hour == 0:  # Midnight or Noon
+                    display_hour = 12
+                
+                am_pm = "AM" if suggested_hour_24 < 12 or suggested_hour_24 == 24 else "PM" # 24 is midnight (start of day)
+                if suggested_hour_24 == 12: # Noon is PM
+                    am_pm = "PM"
+
+                # Store the concrete suggestion in call_data for potential confirmation
+                self.call_data["suggested_alternative_slot_details"] = {
+                    "hour_24": suggested_hour_24,
+                    "time_str": f"{display_hour}:{suggested_minutes_str} {am_pm}"
+                }
+                return suggested_hour_24, f"{display_hour}:{suggested_minutes_str} {am_pm}"
+        
+        # Fallback if no even hour is found (should be impossible in a 24-hour cycle)
+        fallback_hour = (original_hour + 2) % 24 # Ensure it's different and likely even
+        if fallback_hour % 2 != 0: fallback_hour = (fallback_hour +1) % 24
+        self.call_data["suggested_alternative_slot_details"] = {"hour_24": fallback_hour, "time_str": f"{fallback_hour}:00"}
+        return fallback_hour, f"around {fallback_hour}:00"
 
     async def end_call(self, params: FunctionCallParams):
-        # Store appointment information if available
-        self.call_data.update(params.arguments)
-        
-        # Save the complete call data
-        await self.save_data(self.call_data, params.result_callback)
-        
-        # Generate appropriate closing message
-        if self.is_spanish:
-            if params.arguments.get("has_appointment", False):
-                appointment_date = params.arguments.get("appointment_date", "")
-                closing_message = f"Gracias por su tiempo. <break time='1s'/> Esperamos verle el {appointment_date}. ¡Que tenga un excelente día!"
-            else:
-                closing_message = "Gracias por su tiempo. <break time='1s'/> ¡Que tenga un excelente día!"
-        else:
-            if params.arguments.get("has_appointment", False):
-                appointment_date = params.arguments.get("appointment_date", "")
-                closing_message = f"Thank you for your time. <break time='1s'/> We look forward to seeing you on {appointment_date}. Have a wonderful day!"
-            else:
-                closing_message = "Thank you for your time. <break time='1s'/> Have a wonderful day!"
-        
-        await params.result_callback(
-            [
-                {
-                    "role": "system",
-                    "content": closing_message,
+        action = params.arguments.get("action")
+        requested_date_time = params.arguments.get("requested_date_time")
+        requested_hour_24_format = params.arguments.get("requested_hour_24_format")
+        is_patient_confirming = params.arguments.get("is_appointment_confirmed_by_patient")
+        final_appointment_details = params.arguments.get("final_appointment_details_for_goodbye")
+
+        response_content = ""
+        should_terminate_call_now = False
+
+        if self.is_spanish: # Basic localization for responses
+            lang_available = "está disponible"
+            lang_unavailable = "no está disponible"
+            lang_confirm_q = "¿Desea confirmar esta cita?"
+            lang_how_about = "¿Qué tal"
+            lang_another_time_q = "¿Hay algún otro horario que le gustaría intentar?"
+            lang_great_confirmed = "¡Excelente! Su cita para"
+            lang_is_confirmed = "está confirmada."
+            lang_receive_text = "Recibirá un mensaje de texto con los detalles en breve."
+            lang_anything_else = "¿Hay algo más en lo que pueda ayudarle hoy?"
+            lang_ok_not_scheduled = "De acuerdo, no programaremos eso."
+            lang_try_different_time = "¿Le gustaría intentar un horario diferente, o hay algo más?"
+            lang_thank_you_time = "Gracias por su tiempo."
+            lang_look_forward_to_seeing_you = "Esperamos verle el"
+            lang_wonderful_day = "¡Que tenga un excelente día!"
+            lang_need_specific_time = "Necesito un horario específico para verificar. ¿Podría proporcionarlo?"
+            lang_unclear_request = "No estoy segura de cómo manejar esa solicitud. ¿Podría aclarar?"
+        else: # English
+            lang_available = "is available"
+            lang_unavailable = "is not available"
+            lang_confirm_q = "Would you like to confirm this appointment?"
+            lang_how_about = "How about"
+            lang_another_time_q = "Is there another time you'd like to try?"
+            lang_great_confirmed = "Great! Your appointment for"
+            lang_is_confirmed = "is confirmed."
+            lang_receive_text = "You'll receive a text message with the details shortly."
+            lang_anything_else = "Is there anything else I can help with today?"
+            lang_ok_not_scheduled = "Okay, we won't schedule that."
+            lang_try_different_time = "Would you like to try a different time, or is there something else?"
+            lang_thank_you_time = "Thank you for your time."
+            lang_look_forward_to_seeing_you = "We look forward to seeing you on"
+            lang_wonderful_day = "Have a wonderful day!"
+            lang_need_specific_time = "I need a specific time and hour to check for appointments. Could you please provide that?"
+            lang_unclear_request = "I'm not sure how to handle that request regarding appointments. Can you clarify?"
+
+        if action == "request_schedule":
+            if requested_date_time and requested_hour_24_format is not None:
+                self.call_data["pending_appointment_request"] = {
+                    "time_str": requested_date_time, "hour_24": requested_hour_24_format
                 }
-            ]
-        )
+                if requested_hour_24_format % 2 == 0:  # Even hour -> available
+                    response_content = f"{requested_date_time} {lang_available}. {lang_confirm_q}"
+                else:  # Odd hour -> unavailable
+                    _, suggested_time_text = self._get_next_available_slot(requested_hour_24_format)
+                    # 'suggested_alternative_slot_details' is set within _get_next_available_slot
+                    response_content = f"Unfortunately, {requested_date_time} {lang_unavailable}. {lang_how_about} {suggested_time_text}? {lang_another_time_q}"
+            else:
+                response_content = lang_need_specific_time
         
-        # Exit the room after a short delay to allow the closing message to be delivered
-        await asyncio.sleep(2)
-        if self.pipeline and self.pipeline.transport:
-            await self.pipeline.transport.leave()
+        elif action == "confirm_schedule":
+            # Determine which slot was being confirmed
+            # If 'suggested_alternative_slot_details' exists, that was the last one proposed.
+            # Otherwise, it was 'pending_appointment_request'.
+            slot_being_confirmed_details = self.call_data.pop("suggested_alternative_slot_details", 
+                                                            self.call_data.pop("pending_appointment_request", None))
+
+            if is_patient_confirming and slot_being_confirmed_details:
+                confirmed_time_str = slot_being_confirmed_details["time_str"]
+                self.call_data["final_confirmed_appointment"] = confirmed_time_str
+                response_content = f"{lang_great_confirmed} {confirmed_time_str} {lang_is_confirmed} {lang_receive_text} {lang_anything_else}"
+            elif not is_patient_confirming:
+                response_content = f"{lang_ok_not_scheduled} {lang_try_different_time}"
+            else: # Should not happen if logic is correct (e.g. confirm=True but no slot_being_confirmed_details)
+                 response_content = f"{lang_ok_not_scheduled} {lang_try_different_time}"
+
+
+        elif action == "terminate_interaction":
+            final_appointment_to_mention = self.call_data.get("final_confirmed_appointment", final_appointment_details)
+            if final_appointment_to_mention:
+                response_content = f"{lang_thank_you_time} <break time='1s'/> {lang_look_forward_to_seeing_you} {final_appointment_to_mention}. {lang_wonderful_day}"
+            else:
+                response_content = f"{lang_thank_you_time} <break time='1s'/> {lang_wonderful_day}"
+            should_terminate_call_now = True
+        
+        else:
+            response_content = lang_unclear_request
+
+        await params.result_callback([{"role": "system", "content": response_content}])
+
+        if should_terminate_call_now:
+            await asyncio.sleep(3)  # Allow time for the message to be spoken
+            logger.info("Terminating call by pushing EndTaskFrame.")
+            await params.llm.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
 
     async def save_data(self, args, result_callback):
         try:
-            # Get the current date and time
             current_time = datetime.now()
             date_str = current_time.strftime("%Y%m%d_%H%M%S")
             
-            # Get patient name and intent from the arguments if available
-            patient_name = args.get("patient_name", "unknown_patient")
-            intent = args.get("intent", "general_inquiry")
-            
-            # Add call status to the data
-            args["call_status"] = "completed" if "call_status" not in args else args["call_status"]
-            
-            # Create filename
-            filename = f"{date_str}_{patient_name}_{intent}.json"
-            
-            # Create data directory if it doesn't exist
+            # Use twilio_call_sid for the filename
+            if not self.twilio_call_sid:
+                logger.error("twilio_call_sid is not set in IntakeProcessor. Cannot save data with proper filename.")
+                # Fallback filename if twilio_call_sid is missing for some reason
+                filename = f"unknown_call_{date_str}.json"
+            else:
+                filename = f"call_log_{self.twilio_call_sid}_{date_str}.json"
+
             data_dir = os.path.join(script_dir, "data")
             os.makedirs(data_dir, exist_ok=True)
-            
-            # Save the data
             filepath = os.path.join(data_dir, filename)
+
+            # Consolidate all data for saving
+            # Prioritize self.call_data, then update with any specific status from args
+            final_data_to_save = {
+                "call_sid": self.twilio_call_sid,
+                "start_time_iso": self.call_data.get("call_start_time_iso", current_time.isoformat()), # Assuming you might add this elsewhere
+                "end_time_iso": current_time.isoformat(),
+                **self.call_data, # All collected call-specific data
+            }
+
+            # Update with any status passed in args (e.g., from on_participant_left)
+            if args and isinstance(args, dict) and "call_status" in args:
+                final_data_to_save["call_status"] = args.get("call_status")
+            else:
+                final_data_to_save.setdefault("call_status", "completed_unknown_reason")
+
+            # Add conversation history
+            if self.context and hasattr(self.context, 'messages') and self.context.messages:
+                final_data_to_save["conversation_history"] = self.context.messages
+            else:
+                final_data_to_save["conversation_history"] = []
+                logger.warning(f"No conversation history found in context for {self.twilio_call_sid}")
+
             with open(filepath, "w") as f:
-                json.dump(args, f, indent=2)
-                
-            print(f"Saved complete call data to {filepath}")
+                json.dump(final_data_to_save, f, indent=2)
+            logger.info(f"Saved call data for {self.twilio_call_sid} to {filepath}")
+
         except Exception as e:
-            print(f"Error saving data: {e}")
+            logger.error(f"Error saving data for call {self.twilio_call_sid if hasattr(self, 'twilio_call_sid') else 'UNKNOWN'}: {e}")
+        
+        # Original save_data didn't seem to use result_callback, so keeping it None or logging if it were present
+        if result_callback:
+            logger.debug("save_data was called with a result_callback, but it is not used in this implementation.")
 
 
-async def main(room_url: str, token: str, call_id: str, sip_uri: str):
+async def main(room_url: str, token: str, twilio_call_sid: str, daily_room_sip_uri_for_bot_dialin_config: str):
+    logger.info(f"Bot starting with Room URL: {room_url}")
+    logger.info(f"Bot using Twilio CallSid: {twilio_call_sid}")
+    logger.info(f"Bot received Daily Room SIP URI for dial-in config: {daily_room_sip_uri_for_bot_dialin_config}")
+
+    # Initialize Twilio client
+    # Ensure TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN are in environment variables
+    twilio_client = None
+    twilio_account_sid = os.getenv("TWILIO_ACCOUNT_SID")
+    twilio_auth_token = os.getenv("TWILIO_AUTH_TOKEN")
+
+    if twilio_account_sid and twilio_auth_token:
+        twilio_client = Client(twilio_account_sid, twilio_auth_token)
+        logger.info("Twilio client initialized successfully.")
+    else:
+        logger.error("TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN not found in environment. Twilio client not initialized.")
+        # Depending on the desired behavior, you might want to exit or handle this differently.
+        # For now, the bot will continue but won't be able to update the Twilio call.
+
     async with aiohttp.ClientSession() as session:
         transport = DailyTransport(
             room_url,
@@ -531,93 +428,124 @@ async def main(room_url: str, token: str, call_id: str, sip_uri: str):
                 audio_in_enabled=True,
                 audio_out_enabled=True,
                 camera_out_enabled=False,
-                vad_enabled=True,
                 vad_analyzer=SileroVADAnalyzer(),
                 transcription_enabled=True,
+                # Enable dialin_settings if you expect this bot to be dialed into via SIP from Twilio
+                # For the on_dialin_ready event to trigger as intended for call forwarding.
+                dialin_settings={ 'url': daily_room_sip_uri_for_bot_dialin_config } if daily_room_sip_uri_for_bot_dialin_config else None 
             )
         )
 
-        # Initialize TTS service based on detected language
         tts = CartesiaTTSService(
             api_key=os.getenv("CARTESIA_API_KEY"),
-            voice_id="846d6cb0-2301-48b6-9683-48f5618ea2f6",  # Spanish-speaking Lady
+            voice_id="71a7ad14-091c-4e8e-a314-022ece01c121",  # English-speaking Lady
         )
 
         llm = OpenAILLMService(api_key=os.getenv("OPENAI_API_KEY"))
 
-        messages = []
-        context = OpenAILLMContext(messages=messages)
+        messages = [] # Keep initial messages empty, system prompt is in IntakeProcessor
+        context = OpenAILLMContext(messages=messages) # Tools are set in IntakeProcessor
+        
+        intake = IntakeProcessor(context, twilio_call_sid) # Pass twilio_call_sid here
+        # Pass transport to intake processor for graceful shutdown
         context_aggregator = llm.create_context_aggregator(context)
 
-        intake = IntakeProcessor(context)
+        # Register functions with the LLM
         llm.register_function("classify_intent", intake.classify_intent)
-        llm.register_function("list_prescriptions", intake.list_prescriptions)
-        llm.register_function("list_allergies", intake.list_allergies)
-        llm.register_function("list_conditions", intake.list_conditions)
-        llm.register_function("list_visit_reasons", intake.list_visit_reasons)
+        llm.register_function("collect_medical_info", intake.collect_medical_info)
         llm.register_function("end_call", intake.end_call)
 
         fl = FrameLogger("LLM Output")
 
         pipeline = Pipeline(
             [
-                transport.input(),  # Transport input
-                context_aggregator.user(),  # User responses
-                llm,  # LLM
-                fl,  # Frame logger
-                tts,  # TTS
-                transport.output(),  # Transport output
-                context_aggregator.assistant(),  # Assistant responses
+                transport.input(),
+                context_aggregator.user(),
+                llm,
+                fl,
+                tts,
+                transport.output(),
+                context_aggregator.assistant(),
             ]
         )
+        intake.pipeline = pipeline # For potential use within intake, though transport_service is preferred for leave()
 
-        # Store pipeline reference in intake processor
-        intake.pipeline = pipeline
-        
-        # Create pipeline task
         task = PipelineTask(pipeline, params=PipelineParams(
             allow_interruptions=True,
             enable_metrics=True,
         ))
-        intake.pipeline.task = task
+        # intake.pipeline.task = task # Not typically needed this way
 
+        # Event handler for Twilio call forwarding
         @transport.event_handler("on_dialin_ready")
-        async def on_dialin_ready(transport, cdata):
+        async def on_dialin_ready(transport_ref, actual_sip_uri_of_daily_room: str):
+            logger.info(f"Daily dial-in ready. SIP URI for this Daily session: {actual_sip_uri_of_daily_room}")
+
+            if not twilio_client:
+                logger.error("Twilio client not initialized. Cannot update Twilio call to bridge to Daily SIP.")
+                return
+            
+            if not twilio_call_sid:
+                logger.error("Twilio CallSid is not available. Cannot update Twilio call.")
+                return
+            
+            if not actual_sip_uri_of_daily_room:
+                logger.error("Actual SIP URI of Daily room is not available. Cannot update Twilio call.")
+                return
+
             try:
-                # Update Twilio call to connect to Daily SIP endpoint
-                call = twilio_client.calls(call_id).update(
-                    twiml=f'<Response><Dial><Sip>{sip_uri}</Sip></Dial></Response>'
+                logger.info(f"Attempting to update Twilio call {twilio_call_sid} to connect to Daily SIP URI: {actual_sip_uri_of_daily_room}")
+                # Construct TwiML to dial the Daily room's SIP URI
+                # Note: Twilio requires the sip: prefix. The actual_sip_uri_of_daily_room might already have it.
+                # Ensure it does, or add if missing.
+                sip_target_for_twilio = actual_sip_uri_of_daily_room
+                if not sip_target_for_twilio.startswith("sip:"):
+                    sip_target_for_twilio = f"sip:{actual_sip_uri_of_daily_room}"
+                
+                # Create TwiML to <Dial><Sip> the Daily room
+                twiml_response_for_update = f'''<Response><Dial><Sip>{sip_target_for_twilio}</Sip></Dial></Response>'''
+
+                call = twilio_client.calls(twilio_call_sid).update(
+                    twiml=twiml_response_for_update
                 )
-                logger.info(f"Call {call_id} forwarded to Daily SIP endpoint")
+                logger.info(f"Twilio call {twilio_call_sid} update initiated. Status: {call.status}. New TwiML will dial {sip_target_for_twilio}")
             except Exception as e:
-                logger.error(f"Failed to forward call: {str(e)}")
-                raise
+                logger.error(f"Error updating Twilio call {twilio_call_sid}: {e}")
+                # Potentially push an error frame or end the task if this fails critically
 
         @transport.event_handler("on_first_participant_joined")
-        async def on_first_participant_joined(transport, participant):
-            transport.capture_participant_transcription(participant["id"])
-            await task.queue_frames([OpenAILLMContextFrame(context)])
+        async def on_first_participant_joined(transport_ref, participant): # Renamed to transport_ref to avoid clash
+            await transport_ref.capture_participant_transcription(participant["id"])
+            # Let LLM initiate conversation based on system prompt in IntakeProcessor's context
+            await task.queue_frames([OpenAILLMContextFrame(context)]) 
 
         @transport.event_handler("on_participant_left")
-        async def on_participant_left(transport, participant, *args):
-            # Save data when participant leaves
-            await intake.save_data({}, None)
-
-        @transport.event_handler("on_interruption")
-        async def on_interruption(transport, participant, *args):
-            # Handle interruptions gracefully
-            logger.info(f"Interruption detected from participant {participant['id']}")
+        async def on_participant_left(transport_ref, participant, *args):
+            logger.info(f"Participant {participant.get('id', 'Unknown')} left. Saving data and cancelling task.")
+            await intake.save_data({"call_status": "participant_left"}, None)
+            logger.info(f"Attempting to cancel pipeline task for participant {participant.get('id', 'Unknown')}.")
+            await task.cancel() # Directly attempt to cancel the task.
+            logger.info(f"Pipeline task cancellation requested for participant {participant.get('id', 'Unknown')}.")
 
         runner = PipelineRunner()
-        await runner.run(task)
+        try:
+            await runner.run(task)
+        finally:
+            logger.info("Pipeline task finished or runner exited.")
+            # Transport cleanup should be handled by the runner or Daily SDK when connection drops
+            # or when the task is properly cancelled/completed.
+            # Explicitly closing transport here can be problematic if Daily is already cleaning up.
+            # if transport and not transport.is_closed:
+            #     logger.info("Ensuring transport is closed in main finally block.")
+            #     await transport.stop() # Or appropriate close/disconnect method if available and needed
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Pipecat Daily Example")
-    parser.add_argument("-u", type=str, help="Room URL")
-    parser.add_argument("-t", type=str, help="Token")
-    parser.add_argument("-i", type=str, help="Call ID")
-    parser.add_argument("-s", type=str, help="SIP URI")
+    parser = argparse.ArgumentParser(description="Pipecat Daily Bot")
+    parser.add_argument("-u", "--url", type=str, help="Daily room URL", required=True)
+    parser.add_argument("-t", "--token", type=str, help="Daily token", required=True)
+    parser.add_argument("-cid", "--call_id", type=str, help="Twilio CallSid", required=True) # Changed from -i to -cid for clarity
+    parser.add_argument("-s", "--sip_uri", type=str, help="Daily room SIP URI (for bot to configure Daily dial-in)", required=True)
     config = parser.parse_args()
 
-    asyncio.run(main(config.u, config.t, config.i, config.s))
+    asyncio.run(main(config.url, config.token, config.call_id, config.sip_uri))
