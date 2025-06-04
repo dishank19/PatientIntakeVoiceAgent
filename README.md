@@ -91,7 +91,7 @@ python server.py -au /path/to/yourfile.wav
    ```sh
    ngrok http 7860
    ```
-4. **Copy the HTTPS Forwarding URL** shown in the ngrok terminal (e.g., `https://xxxx-xx-xx-xx.ngrok-free.app`).
+4. **Copy the HTTPS Forwarding URL** shown in the ngrok terminal (e.g., `https://xxxx-xx-xx-xx.ngrok-free.app`). This URL is crucial and will be used to configure your Twilio webhooks in the next steps. Make sure to copy the `https` URL.
 
 ### 5.2. Configure Twilio Webhooks
 
