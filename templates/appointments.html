@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Appointments Dashboard</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; background-color: #f4f7f6; color: #333; }
+        .container { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { color: #2c3e50; text-align: center; margin-bottom: 20px; }
+        label { font-weight: bold; margin-right: 10px; }
+        input[type="date"] {
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            font-size: 1em;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 12px;
+            text-align: left;
+            vertical-align: top;
+        }
+        th {
+            background-color: #3498db;
+            color: white;
+            font-weight: bold;
+        }
+        tr:nth-child(even) { background-color: #ecf0f1; }
+        tr:hover { background-color: #d6eaf8; }
+        .no-appointments { text-align: center; color: #7f8c8d; padding: 20px; }
+        .details-list { list-style-type: none; padding-left: 0; }
+        .details-list li { margin-bottom: 4px; }
+        .details-list strong { color: #555; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Scheduled Appointments</h1>
+        <div>
+            <label for="appointment-date">Select Date:</label>
+            <input type="date" id="appointment-date">
+        </div>
+        <div id="appointments-table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Patient Name</th>
+                        <th>Intent</th>
+                        <th>Medical Info (Allergies/Prescriptions/Conditions)</th>
+                        <th>Call SID</th>
+                    </tr>
+                </thead>
+                <tbody id="appointments-tbody">
+                    <!-- Rows will be inserted here by JavaScript -->
+                </tbody>
+            </table>
+            <p id="no-appointments-message" class="no-appointments" style="display:none;">No appointments scheduled for this date.</p>
+        </div>
+    </div>
+
+    <script>
+        const dateInput = document.getElementById('appointment-date');
+        const appointmentsTbody = document.getElementById('appointments-tbody');
+        const noAppointmentsMessage = document.getElementById('no-appointments-message');
+
+        // Function to format time from ISO string
+        function formatTime(isoDateTimeString) {
+            if (!isoDateTimeString) return 'N/A';
+            try {
+                const date = new Date(isoDateTimeString);
+                 // Get time in local timezone
+                return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
+            } catch (e) {
+                console.error('Error formatting time:', e);
+                return 'Invalid Date';
+            }
+        }
+
+        // Function to format medical details
+        function formatMedicalDetails(appointment) {
+            let detailsHtml = '<ul class="details-list">';
+            let hasDetails = false;
+
+            if (appointment.allergies && appointment.allergies.length > 0) {
+                detailsHtml += `<li><strong>Allergies:</strong> ${appointment.allergies.map(a => a.name || a).join(', ')}</li>`;
+                hasDetails = true;
+            }
+            if (appointment.prescriptions && appointment.prescriptions.length > 0) {
+                detailsHtml += `<li><strong>Prescriptions:</strong> ${appointment.prescriptions.map(p => `${p.medication || p} (${p.dosage || 'N/A'})`).join(', ')}</li>`;
+                hasDetails = true;
+            }
+            if (appointment.conditions && appointment.conditions.length > 0) {
+                detailsHtml += `<li><strong>Conditions:</strong> ${appointment.conditions.map(c => c.name || c).join(', ')}</li>`;
+                hasDetails = true;
+            }
+            
+            detailsHtml += '</ul>';
+            return hasDetails ? detailsHtml : 'None provided';
+        }
+
+
+        async function fetchAndDisplayAppointments(dateStr) {
+            if (!dateStr) return;
+            appointmentsTbody.innerHTML = ''; // Clear existing rows
+            noAppointmentsMessage.style.display = 'none';
+
+            try {
+                const response = await fetch(`/api/appointments/${dateStr}`);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const appointments = await response.json();
+
+                if (appointments.length === 0) {
+                    noAppointmentsMessage.style.display = 'block';
+                    return;
+                }
+
+                // Sort appointments by time before displaying
+                appointments.sort((a, b) => new Date(a.scheduled_datetime_iso) - new Date(b.scheduled_datetime_iso));
+
+                appointments.forEach(appt => {
+                    const row = appointmentsTbody.insertRow();
+                    row.insertCell().textContent = formatTime(appt.scheduled_datetime_iso);
+                    row.insertCell().textContent = appt.patient_name || 'N/A';
+                    row.insertCell().textContent = appt.intent || 'N/A';
+                    row.insertCell().innerHTML = formatMedicalDetails(appt);
+                    row.insertCell().textContent = appt.twilio_call_sid || 'N/A';
+                });
+
+            } catch (error) {
+                console.error('Error fetching appointments:', error);
+                appointmentsTbody.innerHTML = '<tr><td colspan="5" style="color:red; text-align:center;">Error loading appointments.</td></tr>';
+            }
+        }
+
+        dateInput.addEventListener('change', (event) => {
+            fetchAndDisplayAppointments(event.target.value);
+        });
+
+        // Set default date to today and load appointments
+        function setDefaultDate() {
+            const today = new Date();
+            const year = today.getFullYear();
+            const month = String(today.getMonth() + 1).padStart(2, '0'); // Months are 0-indexed
+            const day = String(today.getDate()).padStart(2, '0');
+            const todayStr = `${year}-${month}-${day}`;
+            
+            dateInput.value = todayStr;
+            fetchAndDisplayAppointments(todayStr);
+        }
+
+        window.onload = setDefaultDate;
+    </script>
+</body>
+</html> 

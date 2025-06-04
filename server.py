@@ -15,9 +15,10 @@ import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, RedirectResponse, PlainTextResponse, HTMLResponse
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import json
 import asyncio
 import wave
@@ -39,6 +40,8 @@ from twilio.rest import Client
 from twilio.request_validator import RequestValidator
 from loguru import logger
 import sys
+from src.appointment_store import load_appointments
+from datetime import datetime as dt
 
 # Load environment variables from .env file
 load_dotenv(override=True)
@@ -63,6 +66,22 @@ class ConversationHistory(BaseModel):
     transcript: str
     intent: str
     response: str
+
+# Pydantic models for the appointments dashboard API (NEWLY ADDED HERE)
+class MedicalInfoItem(BaseModel):
+    name: Optional[str] = None
+    medication: Optional[str] = None
+    dosage: Optional[str] = None
+
+class AppointmentDisplayDetail(BaseModel):
+    appointment_id: str
+    scheduled_datetime_iso: str
+    patient_name: Optional[str] = "N/A"
+    intent: Optional[str] = "N/A"
+    allergies: List[MedicalInfoItem] = []
+    prescriptions: List[MedicalInfoItem] = []
+    conditions: List[MedicalInfoItem] = []
+    twilio_call_sid: Optional[str] = "N/A"
 
 # Add conversation history storage
 conversation_history: List[ConversationHistory] = []
@@ -127,6 +146,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Initialize Jinja2Templates
+# Ensure the "templates" directory is at the same level as server.py or adjust path
+# Assuming server.py is at project root, and templates/ is also at project root.
+TEMPLATES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
+templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 @app.get("/")
 async def start_agent(request: Request):
@@ -727,6 +751,69 @@ async def create_daily_room_with_sip() -> tuple[str, str, str]:
             logger.info(f"Daily meeting token generated for room: {room_name}")
 
     return room_url, daily_sip_uri_for_room, room_token
+
+@app.get("/dashboard/appointments", response_class=HTMLResponse)
+async def get_appointments_dashboard(request: Request):
+    logger.info("GET /dashboard/appointments: Serving appointments dashboard HTML.")
+    return templates.TemplateResponse("appointments.html", {"request": request})
+
+@app.get("/api/appointments/{date_str}", response_model=List[AppointmentDisplayDetail])
+async def get_appointments_for_date(date_str: str):
+    logger.info(f"GET /api/appointments/{date_str}: Fetching appointments.")
+    try:
+        target_date = dt.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        logger.error(f"Invalid date format for /api/appointments: {date_str}")
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+
+    all_appointments = load_appointments() # From src.appointment_store
+    appointments_for_date: List[AppointmentDisplayDetail] = []
+
+    for appt in all_appointments:
+        try:
+            appt_datetime_iso = appt.get("scheduled_datetime_iso")
+            if not appt_datetime_iso:
+                logger.warning(f"Appointment {appt.get('appointment_id')} missing scheduled_datetime_iso, skipping.")
+                continue
+            
+            appt_dt = dt.fromisoformat(appt_datetime_iso)
+            if appt_dt.date() == target_date:
+                # Convert allergy, prescription, condition data to MedicalInfoItem model
+                # The data in appointments.json might be a list of strings or simple objects
+                # The HTML expects objects like {'name': 'xyz'} or {'medication': 'abc', 'dosage': '123'}
+                
+                def _map_medical_list(data_list, type_key_primary, type_key_secondary=None):
+                    mapped_list = []
+                    if isinstance(data_list, list):
+                        for item in data_list:
+                            if isinstance(item, dict):
+                                if type_key_secondary:
+                                     mapped_list.append(MedicalInfoItem(**{type_key_primary: item.get(type_key_primary), type_key_secondary: item.get(type_key_secondary)}))
+                                else:
+                                    mapped_list.append(MedicalInfoItem(**{type_key_primary: item.get(type_key_primary)}))
+                            elif isinstance(item, str):
+                                mapped_list.append(MedicalInfoItem(**{type_key_primary: item})) # Store string directly under primary key
+                    return mapped_list
+
+                appointments_for_date.append(
+                    AppointmentDisplayDetail(
+                        appointment_id=appt.get("appointment_id", "N/A"),
+                        scheduled_datetime_iso=appt_datetime_iso,
+                        patient_name=appt.get("patient_name"),
+                        intent=appt.get("intent"),
+                        allergies=_map_medical_list(appt.get("allergies", []), "name"),
+                        prescriptions=_map_medical_list(appt.get("prescriptions", []), "medication", "dosage"),
+                        conditions=_map_medical_list(appt.get("conditions", []), "name"),
+                        twilio_call_sid=appt.get("twilio_call_sid")
+                    )
+                )
+        except Exception as e:
+            logger.error(f"Error processing appointment {appt.get('appointment_id', 'UNKNOWN')} for API: {e}")
+            # Optionally skip this appointment or handle error differently
+            continue
+    
+    logger.info(f"Returning {len(appointments_for_date)} appointments for date {date_str}.")
+    return appointments_for_date
 
 if __name__ == "__main__":
     if not os.getenv("DAILY_API_KEY"):
