@@ -71,7 +71,7 @@ class IntakeProcessor:
         context.add_message(
             {
                 "role": "system",
-                "content": """You are Jessica, an agent for Tri-County Health Services. Your job is to collect important information and assist with appointment scheduling. Be polite, professional, and keep responses natural and relatively short. You are not a medical professional.
+                "content": """You are Jessica, an agent for Bay Area Health. Your job is to collect important information and assist with appointment scheduling. Be polite, professional, and keep responses natural. You are not a medical professional.
 
 Important conversation guidelines:
 1. Start by introducing yourself and asking for the patient's name.
@@ -169,7 +169,7 @@ Important conversation guidelines:
         response_message = ""
 
         if not intent_provided:
-        if self.is_spanish:
+            if self.is_spanish:
                 response_message = f"Gracias, {patient_name}. <break time='1s'/> ¿Y cuál es el motivo de su llamada hoy?"
             else:
                 response_message = f"Thanks, {patient_name}. <break time='1s'/> And what is the reason for your call today?"
@@ -209,7 +209,7 @@ Important conversation guidelines:
         
         if not provided_any_medical_info and not self.call_data.get("asked_general_medical_once", False):
             self.call_data["asked_general_medical_once"] = True
-        if self.is_spanish:
+            if self.is_spanish:
                 response_content = "¿Hay alguna alergia o condición médica preexistente que el doctor deba conocer?"
             else:
                 response_content = "Just to be thorough, are there any allergies or existing medical conditions the doctor should be aware of?"
@@ -529,7 +529,7 @@ async def main(room_url: str, token: str, twilio_call_sid: str, daily_room_sip_u
 
         runner = PipelineRunner()
         try:
-        await runner.run(task)
+            await runner.run(task)
         finally:
             logger.info("Pipeline task finished or runner exited.")
             # Transport cleanup should be handled by the runner or Daily SDK when connection drops
