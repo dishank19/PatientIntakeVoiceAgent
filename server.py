@@ -432,71 +432,62 @@ async def handle_call_status(request: Request):
     data = dict(form_data)
     call_sid = data.get('CallSid')
     call_status = data.get('CallStatus')
-        
+
     logger.info(f"Call {call_sid} status update: {call_status}")
 
     try:
-        if call_status == 'completed' or call_status == 'failed' or call_status == 'canceled' or call_status == 'no-answer':
+        if call_status in ['completed', 'failed', 'canceled', 'no-answer']:
             logger.info(f"Call {call_sid} ended with status: {call_status}. Attempting to find and clean up associated bot process.")
-            
+
             pids_to_remove = []
             # Iterate over a copy of items for safe removal
             for pid, (proc_obj, room_url_assoc) in list(bot_procs.items()):
-                # Heuristic: If the bot was launched for this call_sid, we should clean it up.
-                # This requires server.py to associate call_sid with the process if it's not directly in bot_procs key.
-                # For now, we assume any running bot might be related if not uniquely keyed by call_sid.
-                # A more robust solution would be to key bot_procs by call_sid directly if possible.
-                
-                # Check if the process object is an asyncio.subprocess.Process instance
-                if hasattr(proc_obj, 'returncode'): # Characteristic of asyncio.subprocess.Process
-                    if proc_obj.returncode is None:  # Process is still running
-                        logger.info(f"Bot process PID {pid} (room: {room_url_assoc}) associated with call {call_sid} is still running. Terminating.")
-                        try:
-                            proc_obj.terminate() # Send SIGTERM
-                            # Wait for the process to terminate with a timeout
-                            await asyncio.wait_for(proc_obj.wait(), timeout=5.0)
-                            logger.info(f"Bot process PID {pid} terminated gracefully.")
-                        except asyncio.TimeoutError:
-                            logger.warning(f"Timeout waiting for bot process PID {pid} to terminate. Sending SIGKILL.")
-                            proc_obj.kill() # Force kill if terminate times out
-                            await proc_obj.wait() # Wait for kill to complete
-                            logger.info(f"Bot process PID {pid} killed.")
-                        except ProcessLookupError:
-                            logger.warning(f"Bot process PID {pid} already exited before explicit termination attempt.")
-                        except Exception as e_term:
-                            logger.error(f"Error during termination of bot process PID {pid}: {e_term}")
-                        pids_to_remove.append(pid)
-                    else:
-                        logger.info(f"Bot process PID {pid} (room: {room_url_assoc}) for call {call_sid} already terminated with code {proc_obj.returncode}. Marking for removal from tracking.")
-                        pids_to_remove.append(pid)
-                elif hasattr(proc_obj, 'poll'): # Characteristic of subprocess.Popen (older code path)
-                    if proc_obj.poll() is None:
-                        logger.info(f"Bot process PID {pid} (subprocess.Popen) for call {call_sid} is running. Terminating.")
-                        proc_obj.terminate()
-                        try:
-                            proc_obj.wait(timeout=5.0) # subprocess.Popen.wait
-                            logger.info(f"Bot process PID {pid} (subprocess.Popen) terminated.")
-                        except subprocess.TimeoutExpired:
-                            logger.warning(f"Timeout waiting for bot process PID {pid} (subprocess.Popen) to terminate. Killing.")
-                            proc_obj.kill()
-                            proc_obj.wait()
-                            logger.info(f"Bot process PID {pid} (subprocess.Popen) killed.")
-                        except Exception as e_term:
-                            logger.error(f"Error terminating bot process PID {pid} (subprocess.Popen): {e_term}")
-                        pids_to_remove.append(pid)
-                    else:
-                        logger.info(f"Bot process PID {pid} (subprocess.Popen) for call {call_sid} already terminated. Marking for removal.")
-                        pids_to_remove.append(pid)
+                # This is a simple heuristic to find the process. A more robust solution
+                # would be to store the call_sid with the process pid.
+                is_async_proc = isinstance(proc_obj, asyncio.subprocess.Process)
+
+                is_running = False
+                if is_async_proc:
+                    is_running = proc_obj.returncode is None
+                elif hasattr(proc_obj, 'poll'): # subprocess.Popen
+                    is_running = proc_obj.poll() is None
                 else:
-                    logger.warning(f"Bot process PID {pid} in bot_procs is of an unrecognized type. Cannot determine status or terminate.")
+                    logger.warning(f"Bot process PID {pid} is of an unrecognized type. Cannot determine status.")
+                    continue
+
+                if is_running:
+                    logger.info(f"Bot process PID {pid} (type: {'async' if is_async_proc else 'sync'}) for call {call_sid} is running. Terminating.")
+                    try:
+                        proc_obj.terminate()
+                        if is_async_proc:
+                            await asyncio.wait_for(proc_obj.wait(), timeout=5.0)
+                        else:
+                            proc_obj.wait(timeout=5.0)
+                        logger.info(f"Bot process PID {pid} terminated gracefully.")
+                    except (asyncio.TimeoutError, subprocess.TimeoutExpired):
+                        logger.warning(f"Timeout waiting for bot process PID {pid} to terminate. Killing.")
+                        proc_obj.kill()
+                        if is_async_proc:
+                            await proc_obj.wait()
+                        else:
+                            proc_obj.wait()
+                        logger.info(f"Bot process PID {pid} killed.")
+                    except ProcessLookupError:
+                         logger.warning(f"Bot process PID {pid} already exited before explicit termination attempt.")
+                    except Exception as e_term:
+                        logger.error(f"Error during termination of bot process PID {pid}: {e_term}")
+                else:
+                    logger.info(f"Bot process PID {pid} for call {call_sid} already terminated. Marking for removal.")
+
+                pids_to_remove.append(pid)
 
             for pid_to_remove in pids_to_remove:
                 if pid_to_remove in bot_procs:
                     del bot_procs[pid_to_remove]
                     logger.info(f"Removed bot process PID {pid_to_remove} from tracking.")
-            
+
         return JSONResponse({"status": "success", "message": f"Call status {call_status} for {call_sid} processed."})
-        
+
     except Exception as e:
         logger.error(f"Error handling call status: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

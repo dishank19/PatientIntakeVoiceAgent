@@ -33,9 +33,12 @@ from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.openai.llm import OpenAILLMContext, OpenAILLMService
 from pipecat.transports.services.daily import DailyParams, DailyTransport
 from src.appointment_store import load_appointments, save_appointments # New import
-from src.scheduling_helpers import parse_requested_time, is_slot_conflicting, find_next_available_slot
+from src.scheduling_helpers import parse_requested_time, is_slot_conflicting, find_next_available_slot, is_slot_within_business_hours
 
 load_dotenv(override=True)
+
+# Define the appointment duration in minutes
+APPOINTMENT_DURATION_MINUTES = 45
 
 logger.remove(0)
 logger.add(sys.stderr, level="DEBUG")
@@ -82,7 +85,7 @@ class IntakeProcessor:
 
 Important conversation guidelines:
 1. Start by introducing yourself and asking for the patient's name. Your first function call MUST be to 'classify_intent' with the patient's name and their initial reason for calling (if provided).
-2. When calling 'classify_intent', if the patient mentions scheduling an appointment, try to also capture the specific reason for the visit (e.g., 'annual check-up', 'knee pain') in the 'appointment_reason' parameter.
+2. When calling 'classify_intent', if the patient mentions scheduling an appointment, try to also capture the specific reason for the visit  in the 'appointment_reason' parameter.
 3. Wait for the user to finish speaking before responding. Use <break time='1s'/> for noticeable pauses.
 4. Let the patient guide the conversation.
 5. After an appointment is successfully booked via 'end_call' (action: confirm_schedule), YOUR NEXT STEP IS TO ASK ABOUT MEDICAL INFORMATION. You should then call 'collect_medical_info'. If the user has already provided some medical details during scheduling, 'collect_medical_info' will handle follow-ups. If not, it will ask the initial medical question. Do this BEFORE considering ending the call.
@@ -344,31 +347,35 @@ Important conversation guidelines:
             "need_specific_time": "I need a specific time to check. Could you please provide the date and time?" if not self.is_spanish else "Necesito un horario específico para verificar. ¿Podría proporcionar la fecha y la hora?",
             "unclear_request": "I'm not sure how to handle that request regarding appointments. Can you clarify?" if not self.is_spanish else "No estoy segura de cómo manejar esa solicitud. ¿Podría aclarar?",
             "could_not_parse_time": "I'm sorry, I had trouble understanding that time. Could you please try again, perhaps saying the full date and time?" if not self.is_spanish else "Lo siento, tuve problemas para entender esa hora. ¿Podría intentarlo de nuevo, quizás diciendo la fecha y hora completas?",
-            "no_slots_found": "I'm sorry, I couldn't find any available slots soon. You might want to try specifying a different day or time range." if not self.is_spanish else "Lo siento, no pude encontrar ningún espacio disponible pronto. Quizás quiera intentar especificar un día o rango de tiempo diferente."
+            "no_slots_found": "I'm sorry, I couldn't find any available slots soon. You might want to try specifying a different day or time range." if not self.is_spanish else "Lo siento, no pude encontrar ningún espacio disponible pronto. Quizás quiera intentar especificar un día o rango de tiempo diferente.",
+            "outside_business_hours": "Our clinic is open on weekdays from 9 AM to 5 PM. Please select a time within our business hours." if not self.is_spanish else "Nuestra clínica está abierta de lunes a viernes de 9 AM a 5 PM. Por favor, seleccione un horario dentro de nuestro horario de atención."
         }
 
         if action == "request_schedule":
             parsed_requested_dt = parse_requested_time(requested_date_time_str, requested_hour_24_format)
             if parsed_requested_dt:
-                self.call_data["pending_appointment_request"] = {
-                    "time_str": requested_date_time_str or parsed_requested_dt.strftime("%A, %B %d at %I:%M %p"), 
-                    "datetime_iso": parsed_requested_dt.isoformat()
-                }
-                logger.debug(f"[DEBUG] end_call (request_schedule): Updated pending_appointment_request in self.call_data: {json.dumps(self.call_data.get('pending_appointment_request'), indent=2)}")
-                if not is_slot_conflicting(parsed_requested_dt, all_appointments):
-                    response_content = f"{self.call_data['pending_appointment_request']['time_str']} {lang_map['available']}. {lang_map['confirm_q']}"
+                if not is_slot_within_business_hours(parsed_requested_dt):
+                    response_content = lang_map['outside_business_hours']
                 else:
-                    alternative_dt = find_next_available_slot(parsed_requested_dt, all_appointments)
-                    if alternative_dt:
-                        alt_time_str = alternative_dt.strftime("%A, %B %d at %I:%M %p")
-                        self.call_data["suggested_alternative_slot_details"] = {
-                            "time_str": alt_time_str,
-                            "datetime_iso": alternative_dt.isoformat()
-                        }
-                        logger.debug(f"[DEBUG] end_call (request_schedule): Updated suggested_alternative_slot_details in self.call_data: {json.dumps(self.call_data.get('suggested_alternative_slot_details'), indent=2)}")
-                        response_content = f"Unfortunately, {self.call_data['pending_appointment_request']['time_str']} {lang_map['unavailable']}. {lang_map['how_about']} {alt_time_str}? {lang_map['another_time_q']}"
+                    self.call_data["pending_appointment_request"] = {
+                        "time_str": requested_date_time_str or parsed_requested_dt.strftime("%A, %B %d at %I:%M %p"),
+                        "datetime_iso": parsed_requested_dt.isoformat()
+                    }
+                    logger.debug(f"[DEBUG] end_call (request_schedule): Updated pending_appointment_request in self.call_data: {json.dumps(self.call_data.get('pending_appointment_request'), indent=2)}")
+                    if not is_slot_conflicting(parsed_requested_dt, all_appointments):
+                        response_content = f"{self.call_data['pending_appointment_request']['time_str']} {lang_map['available']}. {lang_map['confirm_q']}"
                     else:
-                        response_content = lang_map['no_slots_found']
+                        alternative_dt = find_next_available_slot(parsed_requested_dt, all_appointments)
+                        if alternative_dt:
+                            alt_time_str = alternative_dt.strftime("%A, %B %d at %I:%M %p")
+                            self.call_data["suggested_alternative_slot_details"] = {
+                                "time_str": alt_time_str,
+                                "datetime_iso": alternative_dt.isoformat()
+                            }
+                            logger.debug(f"[DEBUG] end_call (request_schedule): Updated suggested_alternative_slot_details in self.call_data: {json.dumps(self.call_data.get('suggested_alternative_slot_details'), indent=2)}")
+                            response_content = f"Unfortunately, {self.call_data['pending_appointment_request']['time_str']} {lang_map['unavailable']}. {lang_map['how_about']} {alt_time_str}? {lang_map['another_time_q']}"
+                        else:
+                            response_content = lang_map['no_slots_found']
             else:
                 response_content = lang_map['could_not_parse_time'] if requested_date_time_str else lang_map['need_specific_time']
 
@@ -681,4 +688,21 @@ if __name__ == "__main__":
     parser.add_argument("-s", "--sip_uri", type=str, help="Daily room SIP URI (for bot to configure Daily dial-in)", required=True)
     config = parser.parse_args()
 
-    asyncio.run(main(config.url, config.token, config.call_id, config.sip_uri))
+    # Define a simple retry mechanism
+    retry_count = 0
+    max_retries = 2
+    while retry_count <= max_retries:
+        try:
+            asyncio.run(main(config.url, config.token, config.call_id, config.sip_uri))
+            break  # Exit loop if main completes successfully
+        except Exception as e:
+            # This is a broad catch. For production, you might want to be more specific.
+            # For instance, catch httpx.RemoteProtocolError specifically if that's the main issue.
+            logger.error(f"An error occurred in main execution: {e}", exc_info=True)
+            retry_count += 1
+            if retry_count <= max_retries:
+                logger.info(f"Retrying ({retry_count}/{max_retries})...")
+                asyncio.sleep(2) # Wait a moment before retrying
+            else:
+                logger.error("Maximum retry attempts reached. The application will now exit.")
+                # Depending on the use case, you might want to handle this failure differently.
