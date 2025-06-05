@@ -607,7 +607,7 @@ async def handle_twilio_call(request: Request):
         # The actual call forwarding to SIP will be done by bot.py via Twilio API update
         response = VoiceResponse()
         # Example: Play hold music or a waiting message
-        response.say("Thank you for calling Tri-County Health Services. Please wait while we connect you to an agent.")
+        response.say("Thank you for calling Bay Area Health. Please wait while we connect you to an agent.")
         # response.play(url="YOUR_HOLD_MUSIC_URL.mp3") # If you have hold music
         # Keep the call alive; bot.py will update it.
         # A long pause can keep the line open until the bot updates the call.
@@ -825,7 +825,12 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "7860"))
     
     logger.info(f"Attempting to start Uvicorn server on host {host} and port {port}")
-    logger.info("Uvicorn will provide the final accessible URL(s) upon successful startup (typically http://<host>:<port>).")
+    
+    # Determine the accessible host for links
+    display_host = "localhost" if host == "0.0.0.0" else host
+    
+    logger.info(f"Appointments Dashboard will be available at: http://{display_host}:{port}/dashboard/appointments")
+    logger.info("Uvicorn will provide the final accessible URL(s) for the main application upon successful startup.")
     
     # For production, consider using a more robust ASGI server like Gunicorn with Uvicorn workers
     # uvicorn.run(app, host=host, port=port)
